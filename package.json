@@ -1,0 +1,16 @@
+{
+  "name": "reside",
+  "version": "0.1.0",
+  "description": "A simplified Node.js-based agentic IDE for local LLMs via Ollama",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "reside": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["agentic", "ide", "ollama", "qwen", "cli"],
+  "license": "MIT"
+}
