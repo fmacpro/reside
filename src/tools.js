@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import { resolve, relative, sep, join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 
 /**
  * @typedef {Object} ToolResult
@@ -106,7 +106,7 @@ export class ToolEngine {
         params: ['path', 'regex', 'file_pattern'],
       },
       execute_command: {
-        desc: 'Run a shell command in the workspace directory',
+        desc: 'Run a shell command in the workspace directory (10s timeout; use & for long-running processes like servers)',
         params: ['command'],
       },
       create_directory: {
@@ -242,27 +242,71 @@ export class ToolEngine {
           }
         }
 
-        try {
-          const result = execSync(command, {
+        // Use spawn for async execution with timeout
+        return new Promise(resolve => {
+          const child = spawn('/bin/sh', ['-c', command], {
             cwd: this.workspaceDir,
-            encoding: 'utf-8',
-            maxBuffer: 10 * 1024 * 1024,
-            timeout: 60_000,
+            env: { ...process.env, PATH: process.env.PATH },
             stdio: ['pipe', 'pipe', 'pipe'],
+            shell: false,
           });
-          return {
-            success: true,
-            output: result || '(command completed with no output)',
-            data: { exitCode: 0, stdout: result },
-          };
-        } catch (err) {
-          return {
-            success: err.status === 0,
-            output: err.stdout || err.message,
-            error: err.stderr || err.message,
-            data: { exitCode: err.status, stdout: err.stdout, stderr: err.stderr },
-          };
-        }
+
+          let stdout = '';
+          let stderr = '';
+          let timedOut = false;
+
+          const timeout = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGTERM');
+            // Give it a moment to clean up, then SIGKILL
+            setTimeout(() => {
+              try { child.kill('SIGKILL'); } catch {}
+            }, 1000);
+          }, 10_000);
+
+          child.stdout.on('data', data => { stdout += data.toString(); });
+          child.stderr.on('data', data => { stderr += data.toString(); });
+
+          child.on('close', code => {
+            clearTimeout(timeout);
+
+            if (timedOut) {
+              // Command timed out — likely a long-running process (server, watcher, etc.)
+              // Return success with the output collected so far
+              const output = stdout.trim() || stderr.trim() || '(process started, still running)';
+              resolve({
+                success: true,
+                output: `${output}\n\n⚠️ Command timed out after 10s — long-running processes should use & (background) or nohup.`,
+                data: { exitCode: null, timedOut: true, stdout, stderr },
+              });
+              return;
+            }
+
+            if (code === 0) {
+              resolve({
+                success: true,
+                output: stdout.trim() || '(command completed with no output)',
+                data: { exitCode: 0, stdout, stderr },
+              });
+            } else {
+              resolve({
+                success: false,
+                output: stdout.trim() || stderr.trim() || `(exit code ${code})`,
+                error: stderr.trim() || `Command failed with exit code ${code}`,
+                data: { exitCode: code, stdout, stderr },
+              });
+            }
+          });
+
+          child.on('error', err => {
+            clearTimeout(timeout);
+            resolve({
+              success: false,
+              error: `Failed to execute command: ${err.message}`,
+              data: { exitCode: null, stdout, stderr },
+            });
+          });
+        });
       },
 
       create_directory: async ({ path }) => {

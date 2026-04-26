@@ -47,7 +47,8 @@ After completing a task, use finish() to signal completion, then wait for the us
 Always think step by step. Use relative paths.
 
 IMPORTANT: Create each app/project in its own subdirectory (e.g., my-app/).
-Each app directory gets its own git repository automatically when created via create_directory.`,
+Each app directory gets its own git repository automatically when created via create_directory.
+Prefer Node.js for apps unless the user specifies otherwise.`,
 };
 
 /**
