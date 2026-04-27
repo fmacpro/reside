@@ -434,15 +434,25 @@ export class Agent {
           }
         }
 
-        // For npm install failures, inject guidance telling the LLM to verify
-        // the package exists on the registry before trying again.
+        // For npm install failures, inject guidance telling the LLM what went wrong.
         if (!result.success && tc.tool === 'execute_command') {
           const cmd = tc.arguments?.command || '';
+          const errMsg = result.error || '';
+
           if (/^npm\s+install/.test(cmd.trim())) {
-            this.messages.push({
-              role: 'system',
-              content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry by searching the web. Use search_web() to find the correct package name. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
-            });
+            // Check if the error is about missing cwd (running in workdir root instead of app dir)
+            if (errMsg.includes('should run inside an app directory') || errMsg.includes('cwd')) {
+              this.messages.push({
+                role: 'system',
+                content: `The npm install command failed because you forgot to set the cwd parameter. You MUST always use cwd when running npm commands inside an app directory. For example: execute_command({"command":"${cmd}","cwd":"<app-name>"}). Look at the error message to see which apps are available, then pick the correct one. Do NOT retry without cwd.`,
+              });
+            } else {
+              // Package-related failure (non-existent, incompatible, etc.)
+              this.messages.push({
+                role: 'system',
+                content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry by searching the web. Use search_web() to find the correct package name. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+              });
+            }
           }
         }
 
