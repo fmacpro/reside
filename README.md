@@ -2,7 +2,18 @@
 
 A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands Qwen's native JSON tool call format — something most agentic IDE plugins get wrong.
 
-**Minimal dependencies.** Pure Node.js with optional Puppeteer for web search.
+**Minimal dependencies.** Pure Node.js with optional Puppeteer for web search and content fetching.
+
+## Key Features
+
+- **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
+- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box.
+- **12 built-in tools** — Filesystem operations, web search, URL content extraction, current time, and shell command execution.
+- **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
+- **Web-aware** — Search the web via DuckDuckGo (no API key needed), fetch and extract article content from any URL, with automatic Puppeteer fallback for bot-protected sites.
+- **Loop-safe** — Detects when the LLM gets stuck in a tool-calling loop and forces a text response.
+- **Compact CLI output** — One-line tool status summaries by default; `--debug` flag for full verbose output.
+- **Model-agnostic** — Works with any Ollama model, not just Qwen.
 
 ## How It Works
 
@@ -25,7 +36,7 @@ You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5)
 
 - **Node.js** v18+ (tested on v24)
 - **Ollama** running locally with at least one model pulled
-- **Google Chrome** (for web search) — `search_web` uses Puppeteer with stealth plugin to bypass bot detection. Install Chrome via your package manager or download from [google.com/chrome](https://www.google.com/chrome/).
+- **Google Chrome** (for web search and browser-based URL fetching) — `search_web` and `fetch_url` (browser mode) use Puppeteer with stealth plugin to bypass bot detection. Install Chrome via your package manager or download from [google.com/chrome](https://www.google.com/chrome/).
 
 ```bash
 # Install a model if you haven't already
@@ -61,7 +72,7 @@ node src/index.js "Create a simple Express.js API server with a /hello endpoint"
 
 The agent will:
 
-1. Create app directories under `workdirs/`
+1. Create app directories under `workdir/`
 2. Initialize a git repository in each new app directory
 3. Process your task through the LLM
 4. Execute tool calls (write files, run commands, etc.)
@@ -95,7 +106,7 @@ Example chat session:
 ```
 $ node src/index.js --chat
 
-📁 Workdir: /home/user/reside/workdirs
+📁 Workdir: /home/user/reside/workdir
 🤖 Model: qwen2.5-coder:7b
 
 Interactive mode. Type your messages or commands:
@@ -170,14 +181,14 @@ The LLM has access to these tools:
 | `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
 | `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
 | `delete_file(path)`                       | Delete a file or directory                                                                               |
-| `search_web(query)`                       | Search the web for information (DuckDuckGo Lite, no API key needed)                                      |
-| `fetch_url(url)`                          | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
+| `search_web(query)`                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
+| `fetch_url(url, useBrowser?)`             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
 | `get_current_time(format?)`               | Get the current system date/time. Formats: "full" (default), "date", "time", "day", "month", "year", "timestamp" |
 | `finish(message)`                         | Signal that a task is complete                                                                           |
 
 ### Web Search
 
-The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/lite/) — a free, privacy-respecting search endpoint that requires **no API key** and **no registration**. Results are returned as structured data (title, snippet, URL) for the LLM to use.
+The `search_web(query)` tool uses [DuckDuckGo](https://html.duckduckgo.com/html/) — a free, privacy-respecting search engine that requires **no API key** and **no registration**. Results are returned as structured data (title, snippet, URL) for the LLM to use.
 
 **How the LLM uses it:**
 ```
@@ -186,16 +197,14 @@ The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/
 🤖 Let me search for that...
 
 🔧 search_web({"query":"latest Node.js version 2026"})
-   ✅ 1. Node.js — Download the latest LTS version
-      https://nodejs.org/
-   2. Node.js Releases
-      Node.js 22.x is the current LTS release...
-      https://nodejs.org/en/about/releases/
+   ✅ Found 3 results
 
 🤖 The latest LTS version of Node.js is 22.x...
 ```
 
-The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to bypass bot detection. It launches a headless Chrome browser with a mobile viewport, navigates to DuckDuckGo Lite, and extracts results from the rendered HTML. Ads are automatically filtered out, and DuckDuckGo redirect URLs are resolved to their real destinations.
+The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to bypass bot detection. It launches a headless Chrome browser with a desktop viewport, navigates to DuckDuckGo HTML, and extracts results from the rendered page. Ads are automatically filtered out, and redirect URLs are resolved to their real destinations.
+
+`search_web` also follows the top result links to fetch actual article content (titles and summaries), so the LLM gets rich information directly from search results without needing a separate `fetch_url` call.
 
 > **Note:** `search_web` requires Google Chrome to be installed on your system. The default Chrome path is `/usr/bin/google-chrome`. You can modify the `executablePath` in [`src/search.js`](src/search.js:26) if Chrome is installed elsewhere.
 
@@ -203,27 +212,25 @@ The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to 
 
 The `search_web` and `fetch_url` tools work together to give the LLM access to current web content:
 
-1. **Search** — `search_web("query")` returns a list of results with titles, snippets, and URLs
-2. **Fetch** — `fetch_url("https://...")` retrieves the full article content from a specific URL
+1. **Search** — `search_web("query")` returns a list of results with titles, snippets, and URLs (already fetched from the source pages)
+2. **Fetch** — `fetch_url("https://...")` retrieves the full article content from a specific URL when the user asks for more detail
 
 **Example workflow:**
 ```
 💬 > What's the latest news about Node.js?
 
-🤖 Let me search for that...
-
 🔧 search_web({"query":"Node.js latest news 2026"})
-   ✅ 1. Node.js 24 Released with New Features
+   ✅ Found 3 results
+   1. Node.js 24 Released with New Features
       Node.js 24 brings significant performance improvements...
       https://nodejs.org/en/blog/release/v24
-
-🔧 fetch_url({"url":"https://nodejs.org/en/blog/release/v24"})
-   ✅ # Node.js 24 Released
-      We are excited to announce the release of Node.js 24...
-      This version includes V8 12.4, better ESM support...
+   2. Node.js 22.x LTS Now Available
+      ...
 
 🤖 Node.js 24 has been released with V8 12.4, better ESM support...
 ```
+
+The LLM presents search results directly — it does **not** call `fetch_url` on search results since `search_web` already fetches article content. `fetch_url` is only used when the user explicitly asks for the full text of a specific article.
 
 ### Fetch URL
 
@@ -236,34 +243,36 @@ The `fetch_url(url)` tool fetches a web page and extracts its main article conte
 - **Optional browser rendering** — For JavaScript-heavy pages (SPAs, dynamic content), pass `useBrowser=true` to render with Puppeteer before extraction
 - **Automatic fallback** — If the HTTP request is blocked with 403/401/429 (Cloudflare, bot protection), it automatically retries using Puppeteer with stealth plugins
 
-**How it works internally (default mode):**
+**How it works internally (default HTTP mode):**
 1. Fetches the page HTML via HTTPS with a browser-like User-Agent
 2. Parses the HTML into a lightweight DOM tree (no JSDOM needed)
-3. Gathers candidate content containers using positive selectors (`<article>`, `<main>`, content class patterns)
-4. Scores each candidate using heuristic features (text length, paragraph count, link density, semantic tags)
-5. Strips negative containers (nav, footer, aside, script, style, comment sections)
-6. Returns the best candidate as clean formatted text
+3. Gathers candidate content containers using positive selectors (`<article>`, `<main>`, content class patterns like `.post-content`, `.entry-content`, `#article`)
+4. Scores each candidate using heuristic features (text length, paragraph count, link density, presence of semantic tags like `<h1>`–`<h6>`, `<p>`, `<ul>`, `<blockquote>`)
+5. Selects the highest-scoring candidate and strips negative containers (nav, footer, aside, script, style, `.comment`, `.sidebar`, `.ad`)
+6. Returns the best candidate as clean formatted text with structural spacing
 
-**Browser mode (`useBrowser=true`):**
+**Browser mode (`useBrowser=true` or automatic fallback):**
 1. Launches a headless Chrome browser via Puppeteer (shared instance with `search_web`)
-2. Renders the page with JavaScript enabled
-3. Extracts text from `<main>`, `<article>`, `[role="main"]`, or `<body>` using the DOM TreeWalker API
-4. Strips hidden elements, scripts, styles, nav, footer, and header
-5. Returns clean text with structural spacing preserved
+2. Detects and waits for Cloudflare challenges to resolve (checks page title, body text, and DOM selectors for challenge indicators like "Just a moment", "Checking your browser")
+3. Renders the page with JavaScript enabled, waiting for dynamic content to load
+4. Extracts text using a heuristic scoring algorithm on the rendered DOM (same algorithm as HTTP mode, but operating on the live DOM)
+5. Falls back to `document.body.innerText` if heuristic extraction yields fewer than 200 characters (handles JS-heavy SPAs that don't use semantic HTML)
+6. Strips hidden elements, scripts, styles, nav, footer, and header
+7. Returns clean text with structural spacing preserved
 
 ### Get Current Time
 
 The `get_current_time(format?)` tool returns the current system date and time using Node.js built-in `Date` and `Intl.DateTimeFormat` APIs. It supports multiple output formats:
 
-| Format      | Example output                              |
-| ----------- | ------------------------------------------- |
-| `"full"`    | `Monday, 27 April 2026 at 20:35:36 British Summer Time (Europe/London, unix: 1777318536)` |
-| `"date"`    | `2026-04-27`                                |
-| `"time"`    | `20:35:36`                                  |
-| `"day"`     | `Monday`                                    |
-| `"month"`   | `April`                                     |
-| `"year"`    | `2026`                                      |
-| `"timestamp"` | `1777318536`                              |
+| Format        | Example output                              |
+| ------------- | ------------------------------------------- |
+| `"full"`      | `Monday, 27 April 2026 at 20:35:36 British Summer Time (Europe/London, unix: 1777318536)` |
+| `"date"`      | `2026-04-27`                                |
+| `"time"`      | `20:35:36`                                  |
+| `"day"`       | `Monday`                                    |
+| `"month"`     | `April`                                     |
+| `"year"`      | `2026`                                      |
+| `"timestamp"` | `1777318536`                                |
 
 The LLM automatically selects the appropriate format based on the question (e.g., "what time is it?" → `"time"`, "what's the date?" → `"date"`). Structured data with all fields is always returned regardless of format.
 
@@ -282,8 +291,8 @@ node src/index.js --chat --debug
 In debug mode, the agent shows:
 - Full raw JSON arguments for each tool call
 - Complete tool output (truncated at 500 chars)
-- Intermediate logs from search and fetch operations
-- No compact one-liner summaries
+- Intermediate logs from search and fetch operations (e.g., "DDG returned N raw results", "Followed N results")
+- No compact one-liner summaries — you see the raw output
 
 You can also enable debug mode permanently by setting `debugMode: true` in `~/.config/reside/config.json`.
 
@@ -303,11 +312,11 @@ node src/index.js --list-apps
 
 # Example output:
 #   📜 my-app
-#      /home/user/reside/workdirs/my-app
+#      /home/user/reside/workdir/my-app
 #      a1b2c3d Iteration 1: create_directory, write_file
 #      e5f6g7h Initial commit
 #   📁 todo-app       (no git yet)
-#      /home/user/reside/workdirs/todo-app
+#      /home/user/reside/workdir/todo-app
 ```
 
 ## Model Support
@@ -334,9 +343,9 @@ reside/
 │   ├── config.js             # Configuration system (file + env vars)
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
 │   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
-│   ├── tools.js              # Tool execution engine (12 tools: filesystem + web search + fetch + time)
+│   ├── tools.js              # Tool execution engine (12 tools)
 │   ├── fetchUrl.js           # URL fetching and article content extraction (zero deps)
-│   ├── search.js             # Puppeteer-based DuckDuckGo search engine
+│   ├── search.js             # Puppeteer-based DuckDuckGo search + browser URL fetch
 │   ├── agent.js              # Main agent loop orchestrator
 │   └── workspace.js          # Workdir manager with per-app git repos
 └── workdir/                  # App/project directories (each with own git)
@@ -350,13 +359,13 @@ src/index.js          CLI argument parsing, routes to single-run or chat mode
 src/config.js         Loads config from ~/.config/reside/config.json + env vars
      │
 src/agent.js          Agent loop: sends messages to LLM, parses responses,
-     │                executes tools, feeds results back
+     │                executes tools, feeds results back, detects loops
      │
      ├── src/ollama.js      HTTP client for Ollama API
      ├── src/parser.js      Parses Qwen's JSON tool call format
-     ├── src/tools.js       Tool execution engine (filesystem + web)
+     ├── src/tools.js       Tool execution engine (filesystem + web + time)
      ├── src/fetchUrl.js    URL fetching & content extraction (zero deps)
-     ├── src/search.js      Puppeteer-based DuckDuckGo search
+     ├── src/search.js      Puppeteer-based DuckDuckGo search + browser URL fetch
      └── src/workspace.js   Workdir management with per-app git repos
 ```
 
