@@ -833,12 +833,134 @@ function sanitizeContent(content) {
   return sanitized;
 }
 
+// ─── Social Media / UI Noise Filter ─────────────────────────────────────────
+
+/**
+ * Common social media UI noise patterns that appear on topic/index pages.
+ * These are words/phrases that appear in social media widgets (Follow buttons,
+ * share counters, etc.) and are NOT part of article content.
+ */
+const NOISE_PATTERNS = [
+  // Social media follow/share UI
+  /\bFollow\b/g,
+  /\bFollowing\b/g,
+  /\bUnfollow\b/g,
+  /\bShare\b/g,
+  /\bTweet\b/g,
+  /\bRetweet\b/g,
+  /\bLike\b/g,
+  /\bComment\b/g,
+  /\bReply\b/g,
+  /\bRepost\b/g,
+  /\bSubscribe\b/g,
+  /\bSubscribed\b/g,
+  /\bUnsubscribe\b/g,
+  /\bSign up\b/g,
+  /\bSign in\b/g,
+  /\bLog in\b/g,
+  /\bRegister\b/g,
+  /\bNewsletter\b/g,
+  /\bClose\s+(panel|menu|sidebar|dialog|modal|popup|banner)\b/gi,
+  /\bDismiss\b/gi,
+  /\bGot it\b/gi,
+  /\bAccept\s+(all|cookies|consent)\b/gi,
+  /\bReject\s+(all|cookies)\b/gi,
+  /\bCookie\s+(settings|preferences|policy)\b/gi,
+  /\bManage\s+(preferences|consent|cookies)\b/gi,
+  /\bPrivacy\s+(policy|settings|preferences)\b/gi,
+  /\bTerms\s+(of\s+)?(service|use|conditions)\b/gi,
+  /\bAdChoices?\b/gi,
+  /\bSponsored\b/gi,
+  /\bPromoted\b/gi,
+  /\bAdvertisement\b/gi,
+  /\bAd\b/g,
+
+  // Pagination / navigation UI
+  /\bLoad\s+more\b/gi,
+  /\bShow\s+more\b/gi,
+  /\bView\s+more\b/gi,
+  /\bRead\s+more\b/gi,
+  /\bSee\s+more\b/gi,
+  /\bNext\s+(page|article|story)\b/gi,
+  /\bPrevious\s+(page|article|story)\b/gi,
+  /\bBack\s+to\s+(top|home|results)\b/gi,
+  /\bSkip\s+(to\s+)?(content|main|navigation)\b/gi,
+  /\bMenu\b/gi,
+  /\bNavigation\b/gi,
+  /\bBreadcrumb\b/gi,
+
+  // Social media platform names (when used as UI labels)
+  /\bFacebook\b/g,
+  /\bTwitter\b/g,
+  /\bInstagram\b/g,
+  /\bYouTube\b/g,
+  /\bLinkedIn\b/g,
+  /\bPinterest\b/g,
+  /\bReddit\b/g,
+  /\bWhatsApp\b/g,
+  /\bTelegram\b/g,
+  /\bThreads\b/g,
+  /\bBluesky\b/g,
+  /\bMastodon\b/g,
+  /\bTikTok\b/g,
+  /\bSnapchat\b/g,
+
+  // Generic UI text
+  /\bclose\s+panel\b/gi,
+  /\bcontent\s+removed\b/gi,
+  /\bUpdates\s+from\b/gi,
+  /\bMy\s+News\b/gi,
+  /\bNews\s+topics?\b/gi,
+  /\bYour\s+(\w+\s+){0,2}(feed|news|topics|settings)\b/gi,
+];
+
+/**
+ * Filter out social media UI noise from extracted content.
+ * Removes lines that consist primarily of noise words.
+ *
+ * @param {string} content - The extracted article text
+ * @returns {string} - Filtered content
+ */
+function filterNoise(content) {
+  if (!content) return content;
+
+  const lines = content.split('\n');
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return true; // Keep empty lines (paragraph separators)
+
+    // Check if the line is primarily noise
+    // Count noise words vs total words
+    const words = trimmed.split(/\s+/);
+    if (words.length === 0) return true;
+
+    let noiseCount = 0;
+    for (const word of words) {
+      const clean = word.replace(/[^a-zA-Z]/g, '');
+      if (!clean) continue;
+      for (const pattern of NOISE_PATTERNS) {
+        // Reset lastIndex for global regex
+        pattern.lastIndex = 0;
+        if (pattern.test(clean)) {
+          noiseCount++;
+          break;
+        }
+      }
+    }
+
+    // If more than 60% of words are noise, filter the line
+    return noiseCount / words.length < 0.6;
+  });
+
+  return filtered.join('\n');
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
  * Extract the main article content from raw HTML.
  * Uses heuristic scoring to find the best content container.
- * Also sanitizes prompt injection attempts.
+ * Also sanitizes prompt injection attempts and filters social media UI noise.
  *
  * @param {string} html - Raw HTML
  * @param {number} [maxLength=50000] - Maximum content length to return
@@ -858,10 +980,21 @@ export function extractFromHtml(html, maxLength = 50000) {
     return { title: title || '', content: '', textLength: 0 };
   }
 
+  // Filter: remove social media UI noise lines
+  const filtered = filterNoise(sanitized);
+
+  if (!filtered || filtered.length < 50) {
+    // If filtering removed everything, fall back to sanitized
+    const truncated = sanitized.length > maxLength
+      ? sanitized.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
+      : sanitized;
+    return { title: title || '', content: truncated, textLength: truncated.length };
+  }
+
   // Truncate if too long
-  const truncated = sanitized.length > maxLength
-    ? sanitized.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
-    : sanitized;
+  const truncated = filtered.length > maxLength
+    ? filtered.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
+    : filtered;
 
   return { title: title || '', content: truncated, textLength: truncated.length };
 }

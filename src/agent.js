@@ -4,6 +4,35 @@ import { WorkspaceManager } from './workspace.js';
 import { parseToolCalls } from './parser.js';
 
 /**
+ * Convert markdown links `[text](url)` to plain `url` in text output.
+ * This prevents LLMs from rendering URLs as `[Link](https://...)` in the CLI.
+ * Also handles bare URLs wrapped in angle brackets `<url>`.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function renderText(text) {
+  if (!text) return text;
+
+  let result = text;
+
+  // Convert [text](url) -> url (plain URL, no markdown)
+  result = result.replace(/\[([^\]]*)\]\(([^)]+)\)/g, (_match, linkText, url) => {
+    const trimmedUrl = url.trim();
+    const trimmedText = linkText.trim();
+    if (trimmedText === trimmedUrl || /^https?:\/\//i.test(trimmedText)) {
+      return trimmedUrl;
+    }
+    return trimmedUrl;
+  });
+
+  // Convert <url> -> url
+  result = result.replace(/<(https?:\/\/[^>]+)>/g, '$1');
+
+  return result;
+}
+
+/**
  * The main agent loop.
  * Orchestrates the conversation with the LLM, parses tool calls,
  * executes them, and feeds results back to the model.
@@ -88,7 +117,7 @@ export class Agent {
       if (toolCalls.length === 0) {
         lastText = text || content;
         if (lastText) {
-          console.log(`\n🤖 ${lastText}`);
+          console.log(`\n🤖 ${renderText(lastText)}`);
         }
         finished = true;
         break;

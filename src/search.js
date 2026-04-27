@@ -160,6 +160,43 @@ function extractRealUrl(url) {
 }
 
 /**
+ * Patterns that indicate a URL is a topic/category/index page rather than
+ * an individual article. These pages tend to have poor content extraction
+ * results because they aggregate multiple stories.
+ */
+const TOPIC_PAGE_PATTERNS = [
+  /\/topics?\//i,
+  /\/category\//i,
+  /\/section\//i,
+  /\/index\//i,
+  /\/news\/(?!story|article|202[0-9]\/)/i,
+  /\/tag\//i,
+  /\/subject\//i,
+  /\/(topics?|categories?|sections?)$/i,
+  /\/explore\//i,
+  /\/browse\//i,
+  /\/directory\//i,
+];
+
+/**
+ * Check if a URL is likely a topic/category/index page rather than an article.
+ * @param {string} url
+ * @returns {boolean}
+ */
+function isTopicPage(url) {
+  try {
+    const parsed = new URL(url);
+    const path = parsed.pathname;
+    for (const pattern of TOPIC_PAGE_PATTERNS) {
+      if (pattern.test(path)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Search the web using DuckDuckGo HTML via Puppeteer.
  * After getting search results, follows the top N links to fetch actual
  * article titles and content summaries using the browser (handles Cloudflare).
@@ -265,13 +302,22 @@ export async function searchWeb(query, options = {}) {
       result.url = extractRealUrl(result.url);
     }
 
-    // Follow top N links to fetch actual article content
-    const followCount = Math.min(followLinks, results.length);
+    // Follow links to fetch actual article content.
+    // Prefer individual article URLs over topic/category pages.
+    // Sort results: non-topic pages first, then topic pages
+    const sortedResults = [...results].sort((a, b) => {
+      const aIsTopic = isTopicPage(a.url) ? 1 : 0;
+      const bIsTopic = isTopicPage(b.url) ? 1 : 0;
+      return aIsTopic - bIsTopic;
+    });
+
+    const followCount = Math.min(followLinks, sortedResults.length);
     const followedResults = [];
 
     for (let i = 0; i < followCount; i++) {
-      const result = results[i];
-      console.log(`   📄 Fetching content from: ${result.title}`);
+      const result = sortedResults[i];
+      const isTopic = isTopicPage(result.url);
+      console.log(`   📄 Fetching content from: ${result.title}${isTopic ? ' (topic page)' : ''}`);
 
       // Use fetchUrlWithBrowser to handle Cloudflare and JS rendering
       const fetched = await fetchUrlWithBrowser(result.url, {
