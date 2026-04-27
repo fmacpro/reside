@@ -520,20 +520,62 @@ export async function fetchUrlWithBrowser(url, options = {}) {
     const html = await page.content();
     const { title, content } = extractFromHtml(html);
 
-    if (!content) {
+    // If heuristic extraction found good content, use it
+    if (content && content.length >= 200) {
       return {
-        success: false,
-        error: 'Page appears to have no readable content.',
-        data: { title, url, contentLength: 0 },
+        success: true,
+        title,
+        content,
+        url,
+        contentLength: content.length,
+      };
+    }
+
+    // Fallback: extract text from the rendered DOM via innerText.
+    // This captures dynamically rendered content (e.g., prices, charts)
+    // that the static HTML parser may miss on JavaScript-heavy SPAs.
+    const renderedText = await page.evaluate(() => {
+      // Remove script, style, nav, footer, header elements
+      const clone = document.body.cloneNode(true);
+      const removals = clone.querySelectorAll('script, style, nav, footer, header, noscript, template');
+      for (const el of removals) el.remove();
+      return clone.innerText || '';
+    });
+
+    const cleanText = renderedText
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (cleanText && cleanText.length > 100) {
+      // Use the rendered text, truncated to a reasonable length
+      const truncated = cleanText.length > 50000
+        ? cleanText.slice(0, 50000) + '\n\n[...content truncated]'
+        : cleanText;
+
+      return {
+        success: true,
+        title: title || '',
+        content: truncated,
+        url,
+        contentLength: truncated.length,
+      };
+    }
+
+    // If both methods failed, return the heuristic result (even if short)
+    if (content) {
+      return {
+        success: true,
+        title,
+        content,
+        url,
+        contentLength: content.length,
       };
     }
 
     return {
-      success: true,
-      title,
-      content,
-      url,
-      contentLength: content.length,
+      success: false,
+      error: 'Page appears to have no readable content.',
+      data: { title, url, contentLength: 0 },
     };
   } catch (err) {
     return {
