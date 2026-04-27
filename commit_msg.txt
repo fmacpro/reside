@@ -1,0 +1,20 @@
+Fix parser JSON repair for template literals with ${} interpolation
+
+The repairJson() function had a bug where it tried to escape ${} markers
+inside backtick template literals. The replacement string was being
+interpreted by JavaScript's regex replacement engine — $ has special
+meaning in replacement strings ($&, $`, $'), so it produced ${ instead
+of \${, causing JSON.parse() to fail with 'Bad escaped character'.
+
+The fix: ${} is valid inside JSON string values and doesn't need escaping.
+Only the backtick delimiter needed conversion to double quotes.
+
+Also adds:
+- Pre-install verification: npm view check before npm install
+- Placeholder detection: rejects stub content in write_file
+- System prompt updates: warn against template literals in JSON,
+  favor native modules, verify package compatibility
+- npm install failure guidance: tells LLM to verify package exists
+- End-to-end integration tests simulating LLM behavior
+- Parser tests for JSON repair edge cases
+- README documentation of new features

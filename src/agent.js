@@ -142,6 +142,10 @@ export class Agent {
     // Loop detection state
     this._toolCallHistory = [];
     this._maxLoopHistory = 6;
+
+    // Track directories created in this session to prevent redundant create_directory calls
+    this._createdDirs = new Set();
+
   }
 
   /**
@@ -299,6 +303,33 @@ export class Agent {
           this._toolCallHistory.shift();
         }
 
+        // Detect: calling create_directory on a top-level app directory that was already
+        // created in this session. Subdirectories within an app (e.g., "time-app/assets/")
+        // are allowed freely. Only top-level directories (direct children of workdir)
+        // are tracked to prevent the LLM from creating the same app directory twice.
+        if (tc.tool === 'create_directory') {
+          const dirPath = tc.arguments?.path || '';
+          // Only track top-level directories (no '/' in path, or single segment)
+          const isTopLevel = !dirPath.includes('/');
+          if (isTopLevel && this._createdDirs.has(dirPath)) {
+            console.log(`   ⚠️ create_directory("${dirPath}") was already called — ending session.`);
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: `Error: Directory "${dirPath}" was already created in this session. Do NOT call create_directory() more than once for the same app directory.`,
+              }),
+            });
+            finished = true;
+            break;
+          }
+          if (isTopLevel) {
+            this._createdDirs.add(dirPath);
+          }
+        }
+
         // Detect: calling fetch_url on a URL that was just returned by search_web in the same iteration.
         // search_web already fetches article content — fetch_url is redundant here.
         if (tc.tool === 'fetch_url' && this._lastSearchResults) {
@@ -336,6 +367,10 @@ export class Agent {
           this._lastSearchResults = result.data.results;
         }
 
+        // Define critical tools list — used both for error handling below
+        // and for deciding whether to inject tool results.
+        const criticalTools = ['write_file', 'create_directory', 'edit_file'];
+
         if (result.success) {
           if (this.config.debugMode) {
             // Debug mode: show full raw output (truncated at 500 chars)
@@ -353,13 +388,43 @@ export class Agent {
           // When a critical tool fails, inject guidance to prevent the LLM from
           // blindly continuing to call more tools (e.g., trying to run a file
           // that was never created, or installing deps in a non-existent dir).
-          const criticalTools = ['write_file', 'create_directory', 'edit_file'];
           if (criticalTools.includes(tc.tool)) {
-            // For create_directory "already exists" errors, give specific guidance
-            let guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
+            // For create_directory "already exists" errors: inject the error
+            // as a tool result so the LLM sees it, then force the session to end.
+            // The LLM MUST NOT get another turn to call more tools — it tends to
+            // ignore guidance and try different directory names, write to wrong
+            // folders, or get stuck in a loop.
             if (tc.tool === 'create_directory' && result.error?.includes('already exists')) {
-              guidance = `The create_directory() tool failed because "${tc.arguments?.path}" already exists. Do NOT retry the same name — it will keep failing. The error message suggests an available alternative name — use that one instead. For example, if the error suggests "time-app-2", call create_directory({"path":"time-app-2"}).`;
+              const dirName = tc.arguments?.path || '';
+              // Inject the tool result so the LLM sees the actual error
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: tc.tool,
+                  arguments: tc.arguments,
+                  result: 'error',
+                  output: `Error: ${result.error}`,
+                }),
+              });
+              // Force the session to end — the LLM does not get another turn.
+              // The error message from create_directory already tells the user
+              // to specify a different name if they want a new app.
+              finished = true;
+              break;
             }
+
+            // For other critical tool failures, inject the error as a tool result
+            // plus guidance telling the LLM to stop and reassess.
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: `Error: ${result.error}`,
+              }),
+            });
+            const guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
             this.messages.push({
               role: 'system',
               content: guidance,
@@ -369,30 +434,45 @@ export class Agent {
           }
         }
 
-        const resultContent = result.success
-          ? (result.output || '(completed successfully)')
-          : `Error: ${result.error}`;
-
-        // Include structured data if available (e.g., search results with URLs)
-        const toolResult = {
-          tool: tc.tool,
-          arguments: tc.arguments,
-          result: result.success ? 'success' : 'error',
-          output: resultContent,
-        };
-        if (result.data) {
-          toolResult.data = result.data;
+        // For npm install failures, inject guidance telling the LLM to verify
+        // the package exists on the registry before trying again.
+        if (!result.success && tc.tool === 'execute_command') {
+          const cmd = tc.arguments?.command || '';
+          if (/^npm\s+install/.test(cmd.trim())) {
+            this.messages.push({
+              role: 'system',
+              content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry by searching the web. Use search_web() to find the correct package name. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+            });
+          }
         }
 
-        this.messages.push({
-          role: 'tool',
-          content: JSON.stringify(toolResult),
-        });
+        // Only inject tool result + check finish for successful tools or
+        // non-critical failures (critical failures already handled above)
+        if (result.success || !criticalTools.includes(tc.tool)) {
+          const resultContent = result.success
+            ? (result.output || '(completed successfully)')
+            : `Error: ${result.error}`;
 
-        if (tc.tool === 'finish') {
-          finished = true;
-          console.log(`\n✅ ${result.output}`);
-          break;
+          const toolResult = {
+            tool: tc.tool,
+            arguments: tc.arguments,
+            result: result.success ? 'success' : 'error',
+            output: resultContent,
+          };
+          if (result.data) {
+            toolResult.data = result.data;
+          }
+
+          this.messages.push({
+            role: 'tool',
+            content: JSON.stringify(toolResult),
+          });
+
+          if (tc.tool === 'finish') {
+            finished = true;
+            console.log(`\n✅ ${result.output}`);
+            break;
+          }
         }
       }
 

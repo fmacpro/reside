@@ -1,6 +1,6 @@
 /**
- * Integration test for search_web + fetch_url workflow.
- * Tests the actual DuckDuckGo Lite search endpoint and fetches a real page.
+ * Integration tests for the full tool execution pipeline.
+ * Tests search_web + fetch_url workflow and end-to-end LLM simulation.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -133,6 +133,179 @@ describe('Web Search + Fetch Integration', () => {
     assert.ok(result.error);
 
     console.log(`Graceful error: ${result.error}`);
+
+    cleanup(dir);
+  });
+});
+
+/**
+ * End-to-end tests that simulate LLM behavior.
+ * These tests verify that the full pipeline (parser + tool execution) works correctly
+ * for common LLM output patterns, including the mistakes LLMs typically make.
+ *
+ * Each test simulates an LLM response, parses it, and executes the resulting tool calls.
+ */
+describe('LLM Simulation — App Creation Workflow', () => {
+  it('simulates creating a simple app with valid JSON tool calls', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Simulate LLM response with valid JSON tool calls
+    const llmResponse = `Let me create a simple app.
+\`\`\`json
+[
+  {"tool": "create_directory", "arguments": {"path": "hello-app"}},
+  {"tool": "write_file", "arguments": {"path": "hello-app/app.js", "content": "console.log(\\"Hello, World!\\");"}}
+]
+\`\`\``;
+
+    const { parseToolCalls } = await import('../src/parser.js');
+    const parsed = parseToolCalls(llmResponse);
+
+    assert.equal(parsed.toolCalls.length, 2, 'Should parse 2 tool calls');
+    assert.equal(parsed.toolCalls[0].tool, 'create_directory');
+    assert.equal(parsed.toolCalls[1].tool, 'write_file');
+
+    // Execute the tool calls
+    for (const tc of parsed.toolCalls) {
+      const result = await engine.execute(tc.tool, tc.arguments);
+      assert.equal(result.success, true, `${tc.tool} should succeed`);
+    }
+
+    // Verify the file was created
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'hello-app', 'app.js')), true);
+    assert.equal(readFileSync(join(dir, 'hello-app', 'app.js'), 'utf-8'), 'console.log("Hello, World!");');
+
+    cleanup(dir);
+  });
+
+  it('simulates LLM using template literal backticks in JSON (the snake-game bug)', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // This is the exact pattern the LLM outputs — backtick template literal for code content.
+    // The parser must repair this invalid JSON and execute the tool call.
+    const llmResponse = '```json\n{"tool": "write_file", "arguments": {"path": "snake-game/app.js", "content": `\nconst readline = require(\'readline\');\n\nconst rl = readline.createInterface({\n  input: process.stdin,\n  output: process.stdout\n});\n\nconsole.log("Snake game ready!");\n`}}\n```';
+
+    const { parseToolCalls } = await import('../src/parser.js');
+    const parsed = parseToolCalls(llmResponse);
+
+    assert.equal(parsed.toolCalls.length, 1, 'Should parse the write_file call despite invalid JSON');
+    assert.equal(parsed.toolCalls[0].tool, 'write_file');
+    assert.equal(parsed.toolCalls[0].arguments.path, 'snake-game/app.js');
+
+    // Create the directory first
+    await engine.execute('create_directory', { path: 'snake-game' });
+
+    // Execute the write_file — this should work now because the parser repaired the JSON
+    const result = await engine.execute('write_file', parsed.toolCalls[0].arguments);
+    assert.equal(result.success, true, 'write_file should succeed after JSON repair');
+
+    // Verify the file was created with the correct content
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'snake-game', 'app.js')), true);
+    const content = readFileSync(join(dir, 'snake-game', 'app.js'), 'utf-8');
+    assert.ok(content.includes('readline'), 'Should contain the readline require');
+    assert.ok(content.includes('Snake game ready!'), 'Should contain the console.log');
+
+    cleanup(dir);
+  });
+
+  it('simulates full snake-game creation workflow (the exact failing scenario)', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Step 1: Create directory
+    let result = await engine.execute('create_directory', { path: 'snake-game' });
+    assert.equal(result.success, true);
+
+    // Step 2: npm init
+    result = await engine.execute('execute_command', { command: 'npm init -y', cwd: 'snake-game' });
+    assert.equal(result.success, true);
+
+    // Step 3: Simulate LLM writing the game file with a template literal in JSON
+    // This is the exact pattern that was failing — the parser must repair it
+    const llmResponse = '```json\n{"tool": "write_file", "arguments": {"path": "snake-game/app.js", "content": `\nconst readline = require(\'readline\');\n\nconst rl = readline.createInterface({\n  input: process.stdin,\n  output: process.stdout\n});\n\nlet snake = [{ x: 10, y: 10 }];\nlet direction = \'right\';\nlet food = { x: 5, y: 5 };\n\nfunction drawBoard() {\n  const board = Array(20).fill().map(() => Array(20).fill(\' \'));\n  snake.forEach(seg => board[seg.y][seg.x] = \'O\');\n  board[food.y][food.x] = \'*\';\n  console.clear();\n  board.forEach(row => console.log(row.join(\'\')));\n}\n\nconsole.log("Snake game ready!");\n`}}\n```';
+
+    const { parseToolCalls } = await import('../src/parser.js');
+    const parsed = parseToolCalls(llmResponse);
+
+    assert.equal(parsed.toolCalls.length, 1, 'Should parse the write_file call');
+    assert.equal(parsed.toolCalls[0].tool, 'write_file');
+
+    // Execute the write_file
+    result = await engine.execute('write_file', parsed.toolCalls[0].arguments);
+    assert.equal(result.success, true, 'write_file should succeed');
+
+    // Verify the file was created
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'snake-game', 'app.js')), true);
+    const content = readFileSync(join(dir, 'snake-game', 'app.js'), 'utf-8');
+    assert.ok(content.includes('readline'), 'Should contain readline');
+    assert.ok(content.includes('drawBoard'), 'Should contain drawBoard function');
+    assert.ok(content.includes('snake'), 'Should contain snake variable');
+
+    cleanup(dir);
+  });
+
+  it('rejects placeholder/stub content in write_file', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Create the directory first
+    await engine.execute('create_directory', { path: 'test-app' });
+
+    // Try to write a placeholder file
+    const result = await engine.execute('write_file', {
+      path: 'test-app/app.js',
+      content: '// Your code here',
+    });
+
+    assert.equal(result.success, false, 'Should reject placeholder content');
+    assert.match(result.error, /placeholder/i, 'Error should mention placeholder');
+
+    cleanup(dir);
+  });
+
+  it('rejects npm install of non-existent packages', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Create the directory first
+    await engine.execute('create_directory', { path: 'test-app' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'test-app' });
+
+    // Try to install a non-existent package
+    const result = await engine.execute('execute_command', {
+      command: 'npm install this-package-definitely-does-not-exist-12345',
+      cwd: 'test-app',
+    });
+
+    assert.equal(result.success, false, 'Should reject non-existent package');
+    assert.match(result.error, /does not exist/i, 'Error should mention package does not exist');
+
+    cleanup(dir);
+  });
+
+  it('allows npm install of real packages', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Create the directory first
+    await engine.execute('create_directory', { path: 'test-app' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'test-app' });
+
+    // Install a real, well-known package
+    const result = await engine.execute('execute_command', {
+      command: 'npm install left-pad',
+      cwd: 'test-app',
+    });
+
+    assert.equal(result.success, true, 'Should allow installing real packages');
+    assert.match(result.output, /node_modules/, 'Output should mention node_modules');
+
+    // Verify node_modules was created
+    const { existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'test-app', 'node_modules')), true);
 
     cleanup(dir);
   });

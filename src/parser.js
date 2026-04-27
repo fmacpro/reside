@@ -108,15 +108,128 @@ export function parseToolCalls(content) {
 
 /**
  * Try to parse a JSON string, returning null on failure.
+ * First attempts standard JSON.parse, then tries to repair common LLM mistakes.
  * @param {string} str
  * @returns {any|null}
  */
 function tryParseJson(str) {
+  // First attempt: standard JSON.parse
   try {
     return JSON.parse(str);
   } catch {
-    return null;
+    // Fall through to repair attempts
   }
+
+  // Second attempt: repair common LLM JSON mistakes
+  const repaired = repairJson(str);
+  if (repaired !== null) {
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Attempt to repair common JSON mistakes made by LLMs.
+ *
+ * Common issues:
+ * 1. Template literals (backtick strings) used instead of JSON strings
+ *    e.g., {"content": `const x = ${y};`} — backticks and ${} are NOT valid JSON
+ * 2. Trailing commas in objects/arrays
+ * 3. Single quotes instead of double quotes for property names/string values
+ * 4. Missing quotes around property names
+ *
+ * Strategy: extract the JSON structure, find backtick-delimited values,
+ * and convert them to properly escaped JSON strings.
+ *
+ * @param {string} str
+ * @returns {string|null}
+ */
+function repairJson(str) {
+  if (!str || typeof str !== 'string') return null;
+
+  let result = str;
+
+  // Fix 1: Replace single quotes with double quotes for property names
+  // e.g., {'tool': 'value'} -> {"tool": "value"}
+  // But be careful not to break apostrophes inside strings
+  result = result.replace(/'/g, '"');
+
+  // Fix 2: Remove trailing commas before closing braces/brackets
+  result = result.replace(/,(\s*[}\]])/g, '$1');
+
+  // Fix 3: Handle template literals (backtick strings) in JSON values.
+  // The LLM often outputs something like:
+  //   {"tool": "write_file", "arguments": {"path": "x", "content": `code here`}}
+  // This is invalid JSON because backticks are not valid string delimiters.
+  //
+  // Strategy: Find backtick-delimited values and convert them to JSON strings.
+  // We need to handle:
+  //   - Simple backtick strings: `hello` -> "hello"
+  //   - Multi-line backtick strings: `line1\nline2` -> "line1\nline2"
+  //   - Backtick strings with ${} interpolation: `${x}` -> must escape the ${
+  //
+  // The approach: find the outermost JSON object structure, then within it,
+  // replace backtick-delimited sections with properly escaped double-quoted strings.
+
+  // First, check if there are backtick strings that need conversion
+  if (result.includes('`')) {
+    // We need to be smart about this. The structure is typically:
+    // {"tool": "name", "arguments": {"key": `value`}}
+    // We'll convert backtick-delimited content to JSON strings.
+    
+    // Find all backtick-delimited sections and replace them
+    // A backtick string starts after a colon+space and ends before a comma, brace, or bracket
+    // But multi-line backtick strings can contain anything including commas and braces.
+    // So we need to match balanced backticks.
+    
+    let backtickResult = '';
+    let i = 0;
+    let inBacktick = false;
+    let backtickStart = -1;
+    
+    while (i < result.length) {
+      const ch = result[i];
+      if (ch === '`' && !inBacktick) {
+        inBacktick = true;
+        backtickStart = i;
+        i++;
+      } else if (ch === '`' && inBacktick) {
+        // End of backtick string
+        const rawContent = result.slice(backtickStart + 1, i);
+        // Escape the content for JSON: escape backslashes, double quotes, newlines, tabs
+        let escaped = rawContent
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n')
+          .replace(/\r/g, '\\r')
+          .replace(/\t/g, '\\t');
+        // Note: ${} is valid inside a JSON string value, so we do NOT escape it.
+        // The only issue was the backtick delimiter, which we're converting to double quotes.
+        // Escaping $ would produce \$ which is NOT a valid JSON escape sequence.
+        backtickResult += '"' + escaped + '"';
+        inBacktick = false;
+        i++;
+      } else if (inBacktick) {
+        // Skip characters inside backtick — they'll be captured by slice above
+        i++;
+      } else {
+        backtickResult += ch;
+        i++;
+      }
+    }
+    
+    if (!inBacktick) {
+      result = backtickResult;
+    }
+    // If we're still in a backtick (unclosed), return null — can't repair
+  }
+
+  return result;
 }
 
 /**

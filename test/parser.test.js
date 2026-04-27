@@ -84,6 +84,59 @@ describe('parseToolCalls', () => {
     assert.equal(result.toolCalls.length, 1);
     assert.equal(result.toolCalls[0].arguments.message, 'from fence');
   });
+  it('repairs template literal backtick strings in JSON (single line)', () => {
+    // LLM often uses backticks instead of double quotes for string values
+    const input = '```json\n{"tool": "write_file", "arguments": {"path": "test.txt", "content": `hello world`}}\n```';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'write_file');
+    assert.equal(result.toolCalls[0].arguments.path, 'test.txt');
+    assert.equal(result.toolCalls[0].arguments.content, 'hello world');
+  });
+
+  it('repairs template literal backtick strings with multi-line content', () => {
+    // LLM often uses multi-line template literals for code content
+    const input = '```json\n{"tool": "write_file", "arguments": {"path": "app.js", "content": `const x = 1;\nconst y = 2;\nconsole.log(x + y);`}}\n```';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'write_file');
+    assert.equal(result.toolCalls[0].arguments.path, 'app.js');
+    assert.equal(result.toolCalls[0].arguments.content, 'const x = 1;\nconst y = 2;\nconsole.log(x + y);');
+  });
+
+  it('repairs template literal with ${} interpolation markers', () => {
+    // LLM sometimes includes ${variable} in template literals
+    const input = '```json\n{"tool": "write_file", "arguments": {"path": "app.js", "content": `const port = ${PORT};`}}\n```';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].arguments.content, 'const port = ${PORT};');
+  });
+
+  it('repairs JSON with trailing commas', () => {
+    const input = '{"tool": "write_file", "arguments": {"path": "test.txt", "content": "hello",}}';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].arguments.content, 'hello');
+  });
+
+  it('repairs JSON with single quotes', () => {
+    const input = "{'tool': 'write_file', 'arguments': {'path': 'test.txt', 'content': 'hello'}}";
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].arguments.content, 'hello');
+  });
+
+  it('repairs the exact LLM output from the snake-game test', () => {
+    // This is the exact pattern the LLM outputs — backtick template literal for code content
+    const input = '```json\n{"tool": "write_file", "arguments": {"path": "snake-game/app.js", "content": `\nconst readline = require(\'readline\');\n\nconst rl = readline.createInterface(\n{\n  input: process.stdin,\n  output: process.stdout\n}\n);\n\nconst width = 20;\nconst height = 20;\nlet snake =\n[{ x: 10, y: 10 }]\n;\nlet direction = \'right\';\nlet food =\n{ x: Math.floor(Math.random() * width), y: Math.floor(Math.random() * height) }\n;\n\nfunction drawBoard()\n{\n  const board = Array.from({ length: height }, () => Array(width).fill(\' \'));\n  snake.forEach(segment => board[segment.y][segment.x] = \'O\');\n  board[food.y][food.x] = \'*\';\n  console.clear();\n  board.forEach(row => console.log(row.join(\'\')));\n}\n`}}\n```';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'write_file');
+    assert.equal(result.toolCalls[0].arguments.path, 'snake-game/app.js');
+    // Should contain the code content (backtick string converted to JSON string)
+    assert.ok(result.toolCalls[0].arguments.content.includes('readline'));
+    assert.ok(result.toolCalls[0].arguments.content.includes('drawBoard'));
+  });
 });
 
 describe('containsToolCalls', () => {

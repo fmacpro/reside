@@ -171,6 +171,27 @@ export class ToolEngine {
             error: `Cannot write files directly in the workdir root. Create an app directory first using create_directory(), then write files inside it (e.g., "my-app/${path}").`,
           };
         }
+
+        // Detect placeholder/stub content — the LLM should write real code, not placeholders.
+        // Common patterns: "// Your code here", "// TODO", "function main() { }" (empty body),
+        // or very short files that are clearly stubs.
+        const contentStr = String(content).trim();
+        const placeholderPatterns = [
+          /^\/\/\s*(your|todo|placeholder|insert|add|implement|write|put|fill)[^]*$/im,
+          /^\/\*\s*(your|todo|placeholder|insert|add|implement|write|put|fill)[^]*\*\/$/im,
+          /^#\s*(your|todo|placeholder|insert|add|implement|write|put|fill)/im,
+          /^function\s+\w+\s*\(\s*\)\s*\{\s*\}\s*$/m,
+          /^const\s+\w+\s*=\s*\(\s*\)\s*=>\s*\{\s*\}\s*$/m,
+          /^class\s+\w+\s*\{\s*\}\s*$/m,
+        ];
+        const isPlaceholder = placeholderPatterns.some(p => p.test(contentStr));
+        if (isPlaceholder && contentStr.length < 200) {
+          return {
+            success: false,
+            error: `The content for "${path}" appears to be a placeholder/stub (${contentStr.length} bytes). You must write the COMPLETE implementation, not a placeholder. Delete this file first if needed, then write the full code.`,
+          };
+        }
+
         this._ensureDir(join(fullPath, '..'));
         writeFileSync(fullPath, String(content), 'utf-8');
 
@@ -299,24 +320,87 @@ export class ToolEngine {
           }
         }
 
+        // Pre-execution check: verify npm packages exist and are compatible before installing.
+        // The LLM often picks non-existent or broken packages (e.g., "curses").
+        // Run `npm view <pkg>` to check if the package exists on the registry and get its metadata.
+        const npmInstallMatch = command.trim().match(/^npm\s+install\s+(.+)$/);
+        if (npmInstallMatch) {
+          const packages = npmInstallMatch[1].split(/\s+/).filter(p => !p.startsWith('-') && !p.startsWith('@'));
+          for (const pkg of packages) {
+            try {
+              // Check if package exists and get its metadata (latest version, description, engine requirements)
+              const viewResult = execSync(`npm view "${pkg}" version description engines 2>/dev/null`, {
+                encoding: 'utf-8',
+                timeout: 5000,
+                cwd: workingDir,
+              });
+              if (!viewResult.trim()) {
+                return {
+                  success: false,
+                  error: `Package "${pkg}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`,
+                  data: { exitCode: null, stdout: '', stderr: '' },
+                };
+              }
+
+              // Check engine compatibility: if the package specifies a Node.js engine requirement,
+              // verify it's compatible with the current Node.js version (v24.13.1).
+              const lines = viewResult.trim().split('\n');
+              const latestVersion = lines[0]?.trim() || 'unknown';
+              const description = lines[1]?.trim() || '';
+              const engines = lines.slice(2).join(' ').trim();
+
+              // If the package has an engine requirement, check it
+              if (engines && engines !== 'undefined' && engines !== '{}') {
+                // Extract node engine requirement (e.g., ">=14.0.0" or ">=18")
+                const nodeEngineMatch = engines.match(/["']node["']\s*:\s*["']([^"']+)["']/);
+                if (nodeEngineMatch) {
+                  const nodeRequirement = nodeEngineMatch[1];
+                  // Simple check: if it requires a very old Node version, warn
+                  const minVersion = nodeRequirement.replace(/[>=<^~ ]/g, '');
+                  const minMajor = parseInt(minVersion.split('.')[0], 10);
+                  if (!isNaN(minMajor) && minMajor < 12) {
+                    return {
+                      success: false,
+                      error: `Package "${pkg}@${latestVersion}" requires Node.js ${nodeRequirement}, but the current system has Node.js v24.13.1. This package is likely outdated and incompatible. Use search_web() to find a maintained alternative.`,
+                      data: { exitCode: null, stdout: '', stderr: '' },
+                    };
+                  }
+                }
+              }
+            } catch {
+              return {
+                success: false,
+                error: `Package "${pkg}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`,
+                data: { exitCode: null, stdout: '', stderr: '' },
+              };
+            }
+          }
+        }
+
         // Pre-execution check: detect server-starting commands and tell the LLM
         // to output instructions instead of running them. Servers are long-running
         // processes that would hit the 10s timeout and can't be managed interactively.
         const serverPatterns = [
           /^node\s+\S+\.js\s*$/i,           // node app.js
+          /^node\s+\S+\/\S+\.js\s*$/i,      // node dir/app.js (LLM often prefixes dir)
           /^npm\s+start\s*$/i,               // npm start
           /^npm\s+run\s+(dev|start|serve)/i,  // npm run dev/start/serve
           /^python3?\s+\S+\.py\s*$/i,         // python app.py
+          /^python3?\s+\S+\/\S+\.py\s*$/i,   // python dir/app.py
           /^deno\s+run\s+/i,                  // deno run
           /^bun\s+run\s+/i,                   // bun run
           /^bun\s+\S+\.(js|ts)\s*$/i,         // bun app.js
+          /^bun\s+\S+\/\S+\.(js|ts)\s*$/i,   // bun dir/app.js
           /^npx\s+(serve|http-server|live-server)/i, // npx serve etc.
         ];
         const isServerCommand = serverPatterns.some(p => p.test(command.trim()));
         if (isServerCommand) {
+          // Strip any directory prefix from the command for the user-facing suggestion.
+          // E.g., "node time-app/app.js" -> "node app.js", "python my-app/app.py" -> "python app.py"
+          const strippedCommand = command.replace(/^(node|python3?|deno|bun)\s+\S+\/(\S+\.\w+)\s*$/i, '$1 $2');
           return {
             success: false,
-            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${command}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${command}\` and mention the directory separately.`,
+            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
             data: { exitCode: null, stdout: '', stderr: '' },
           };
         }
@@ -447,25 +531,27 @@ export class ToolEngine {
         if (!path) return { success: false, error: 'Missing required argument: path' };
         const fullPath = this._resolvePath(path);
 
-        // Check if directory already exists — prevent accidental overwrite of existing apps
-        const alreadyExists = existsSync(fullPath);
-        if (alreadyExists) {
-          // Check if it's a non-empty directory (likely an existing app)
-          const entries = readdirSync(fullPath);
-          if (entries.length > 0 && !entries.every(e => e.startsWith('.'))) {
-            // Suggest a numbered alternative name (e.g., "time-app-2", "time-app-3")
-            const baseName = path.replace(/-\d+$/, ''); // Strip existing suffix if any
-            let counter = 2;
-            let altName = `${baseName}-${counter}`;
-            while (existsSync(join(this.workspaceDir, altName))) {
-              counter++;
-              altName = `${baseName}-${counter}`;
+        // Determine if this is a top-level app directory (direct child of workdir)
+        // or a subdirectory within an existing app (e.g., "time-app/assets/").
+        const rel = relative(this.workspaceDir, fullPath);
+        const isTopLevel = rel && !rel.includes(sep) && !rel.startsWith('.');
+
+        // For top-level app directories: if it already exists and has files,
+        // reject the call — the LLM should not create the same app twice.
+        // For subdirectories within an app: always allow creation.
+        if (existsSync(fullPath)) {
+          if (isTopLevel) {
+            // Check if it's a non-empty directory (likely an existing app)
+            const entries = readdirSync(fullPath);
+            if (entries.length > 0 && !entries.every(e => e.startsWith('.'))) {
+              return {
+                success: false,
+                error: `Directory "${path}" already exists and contains files. Cannot overwrite existing apps. Please reprompt and specify a new name for the app.`,
+              };
             }
-            return {
-              success: false,
-              error: `Directory "${path}" already exists and contains files. Use a different name like "${altName}" instead.`,
-            };
+            // Empty top-level directory — allow re-creation (e.g., if it was just created and is still empty)
           }
+          // Subdirectory within an app — always allow
         }
 
         this._ensureDir(fullPath);
@@ -473,8 +559,6 @@ export class ToolEngine {
         // Auto-init git ONLY for top-level app directories (direct children of workdir).
         // Subdirectories within an app (e.g., my-app/src/) must NOT get their own git repo.
         if (this.workspaceManager) {
-          const rel = relative(this.workspaceDir, fullPath);
-          const isTopLevel = rel && !rel.includes(sep) && !rel.startsWith('.');
           const insideExistingGit = this.workspaceManager.resolveAppDir(fullPath) !== null;
           if (isTopLevel && !insideExistingGit) {
             this.workspaceManager.initAppGit(fullPath);
@@ -483,8 +567,8 @@ export class ToolEngine {
 
         return {
           success: true,
-          output: alreadyExists ? `Directory already exists: ${path}` : `Created directory: ${path}`,
-          data: { path, alreadyExists },
+          output: existsSync(fullPath) ? `Directory already exists: ${path}` : `Created directory: ${path}`,
+          data: { path },
         };
       },
 

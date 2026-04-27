@@ -7,11 +7,15 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 ## Key Features
 
 - **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
-- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box.
+- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals (backtick strings), trailing commas, and single quotes.
 - **12 built-in tools** — Filesystem operations, web search, URL content extraction, current time, and shell command execution.
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
 - **Web-aware** — Search the web via DuckDuckGo (no API key needed), fetch and extract article content from any URL, with automatic Puppeteer fallback for bot-protected sites.
 - **Loop-safe** — Detects when the LLM gets stuck in a tool-calling loop and forces a text response.
+- **JSON repair** — Automatically fixes common LLM JSON mistakes: backtick template literals (`\`code\`` → `"code"`), trailing commas, and single quotes — so tool calls succeed even when the model outputs slightly malformed JSON.
+- **Placeholder rejection** — Detects and rejects stub/placeholder content in `write_file` (e.g., `// Your code here`, empty function bodies), forcing the LLM to write complete, working code.
+- **Pre-install verification** — Before running `npm install <pkg>`, verifies the package exists on the registry and is compatible with the current Node.js version (v24.13.1).
+- **Native module preference** — The system prompt instructs the LLM to favor Node.js built-in modules over external npm packages, reducing dependencies.
 - **Server-aware** — Blocks commands that start long-running server processes (e.g., `node app.js`, `npm start`) and tells the LLM to output instructions for the user instead.
 - **Compact CLI output** — One-line tool status summaries by default; `--debug` flag for full verbose output.
 - **Model-agnostic** — Works with any Ollama model, not just Qwen.
