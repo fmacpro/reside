@@ -111,7 +111,7 @@ export class ToolEngine {
         params: ['path', 'regex', 'file_pattern'],
       },
       execute_command: {
-        desc: 'Run a shell command (10s timeout). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls. IMPORTANT: Do NOT use this to start server apps (e.g., node app.js, npm start) — those are long-running processes that cannot be managed here. Instead, tell the user the command to run.',
+        desc: 'Run a shell command (10s timeout, 5s for run commands like node app.js). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls. CLI/TUI apps (node app.js) will run and complete normally. Server commands (npm start, npm run dev) are blocked — tell the user the command to run instead.',
         params: ['command', 'cwd?'],
       },
       create_directory: {
@@ -377,33 +377,39 @@ export class ToolEngine {
           }
         }
 
-        // Pre-execution check: detect server-starting commands and tell the LLM
-        // to output instructions instead of running them. Servers are long-running
-        // processes that would hit the 10s timeout and can't be managed interactively.
+        // Pre-execution check: detect server-starting commands.
+        // For known server commands (npm start, npm run dev/serve), block immediately.
+        // For generic run commands (node app.js, python app.py), let them run with a
+        // shorter timeout — CLI/TUI apps will complete quickly, while servers will
+        // time out and be handled by the timeout logic below.
         const serverPatterns = [
-          /^node\s+\S+\.js\s*$/i,           // node app.js
-          /^node\s+\S+\/\S+\.js\s*$/i,      // node dir/app.js (LLM often prefixes dir)
           /^npm\s+start\s*$/i,               // npm start
           /^npm\s+run\s+(dev|start|serve)/i,  // npm run dev/start/serve
+          /^npx\s+(serve|http-server|live-server)/i, // npx serve etc.
+        ];
+        const isServerCommand = serverPatterns.some(p => p.test(command.trim()));
+        if (isServerCommand) {
+          return {
+            success: false,
+            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`node app.js\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`node app.js\` and mention the directory separately.`,
+            data: { exitCode: null, stdout: '', stderr: '' },
+          };
+        }
+
+        // For generic run commands (node app.js, python app.py, etc.), use a shorter
+        // timeout (5s) so CLI/TUI apps that exit on their own will complete, while
+        // long-running servers will time out gracefully.
+        const runCommandPatterns = [
+          /^node\s+\S+\.js\s*$/i,           // node app.js
+          /^node\s+\S+\/\S+\.js\s*$/i,      // node dir/app.js
           /^python3?\s+\S+\.py\s*$/i,         // python app.py
           /^python3?\s+\S+\/\S+\.py\s*$/i,   // python dir/app.py
           /^deno\s+run\s+/i,                  // deno run
           /^bun\s+run\s+/i,                   // bun run
           /^bun\s+\S+\.(js|ts)\s*$/i,         // bun app.js
           /^bun\s+\S+\/\S+\.(js|ts)\s*$/i,   // bun dir/app.js
-          /^npx\s+(serve|http-server|live-server)/i, // npx serve etc.
         ];
-        const isServerCommand = serverPatterns.some(p => p.test(command.trim()));
-        if (isServerCommand) {
-          // Strip any directory prefix from the command for the user-facing suggestion.
-          // E.g., "node time-app/app.js" -> "node app.js", "python my-app/app.py" -> "python app.py"
-          const strippedCommand = command.replace(/^(node|python3?|deno|bun)\s+\S+\/(\S+\.\w+)\s*$/i, '$1 $2');
-          return {
-            success: false,
-            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
-            data: { exitCode: null, stdout: '', stderr: '' },
-          };
-        }
+        const isRunCommand = runCommandPatterns.some(p => p.test(command.trim()));
 
         // Pre-execution check: if no cwd was provided and the command is npm/node-related,
         // check if the user likely meant to run it inside an app directory.
@@ -423,7 +429,13 @@ export class ToolEngine {
           }
         }
 
-        // Use spawn for async execution with timeout
+        // Use spawn for async execution with timeout.
+        // For generic run commands (node app.js, python app.py), use a shorter
+        // timeout (5s) so CLI/TUI apps that exit on their own will complete,
+        // while long-running servers will time out gracefully.
+        // For all other commands, use the default 10s timeout.
+        const commandTimeout = isRunCommand ? 5_000 : 10_000;
+
         return new Promise(resolve => {
           const child = spawn('/bin/sh', ['-c', command], {
             cwd: workingDir,
@@ -447,12 +459,25 @@ export class ToolEngine {
 
             const output = stdout.trim() || stderr.trim() || '(process started, still running)';
             resolved = true;
-            resolve({
-              success: true,
-              output: `${output}\n\n⚠️ Command timed out after 10s — the process is still running in the background. Use the URL/output above to access the server.`,
-              data: { exitCode: null, timedOut: true, stdout, stderr, background: true },
-            });
-          }, 10_000);
+
+            // For run commands that timed out, treat as a server and tell the LLM
+            // to output instructions instead.
+            if (isRunCommand) {
+              // Strip any directory prefix from the command for the user-facing suggestion.
+              const strippedCommand = command.replace(/^(node|python3?|deno|bun)\s+\S+\/(\S+\.\w+)\s*$/i, '$1 $2');
+              resolve({
+                success: false,
+                error: `The command "${command}" appears to start a long-running server process (timed out after 5s). Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
+                data: { exitCode: null, timedOut: true, stdout, stderr, background: true },
+              });
+            } else {
+              resolve({
+                success: true,
+                output: `${output}\n\n⚠️ Command timed out after ${commandTimeout / 1000}s — the process is still running in the background. Use the URL/output above to access the server.`,
+                data: { exitCode: null, timedOut: true, stdout, stderr, background: true },
+              });
+            }
+          }, commandTimeout);
 
           child.stdout.on('data', data => { stdout += data.toString(); });
           child.stderr.on('data', data => { stderr += data.toString(); });

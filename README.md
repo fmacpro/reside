@@ -16,7 +16,7 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 - **Placeholder rejection** — Detects and rejects stub/placeholder content in `write_file` (e.g., `// Your code here`, empty function bodies), forcing the LLM to write complete, working code.
 - **Pre-install verification** — Before running `npm install <pkg>`, verifies the package exists on the registry and is compatible with the current Node.js version (v24.13.1).
 - **Native module preference** — The system prompt instructs the LLM to favor Node.js built-in modules over external npm packages, reducing dependencies.
-- **Server-aware** — Blocks commands that start long-running server processes (e.g., `node app.js`, `npm start`) and tells the LLM to output instructions for the user instead.
+- **Server-aware** — CLI/TUI apps (`node app.js`, `python app.py`) run and complete normally with a 5-second timeout. Known server commands (`npm start`, `npm run dev`, `npx serve`) are blocked — the LLM tells you the command to run instead.
 - **Compact CLI output** — One-line tool status summaries by default; `--debug` flag for full verbose output.
 - **Model-agnostic** — Works with any Ollama model, not just Qwen.
 
@@ -85,7 +85,7 @@ The agent will:
 6. Tell you the command to run to start the app (e.g., `node app.js` in the app directory)
 7. Print a summary and exit
 
-> **Note:** The agent builds your app but does **not** run server processes (e.g., `node app.js`, `npm start`). These are long-running processes that can't be managed interactively. Instead, the agent tells you the exact command to run in your terminal.
+> **Note:** The agent builds your app and can run CLI/TUI apps (e.g., `node app.js` for a weather CLI) directly — they complete within a 5-second timeout. For long-running server processes (e.g., `npm start`, `npm run dev`), the agent tells you the exact command to run in your terminal instead of trying to run them.
 
 ### Conversational Chat Mode
 
@@ -187,7 +187,7 @@ The LLM has access to these tools:
 | `list_files(path)`                        | List files and directories in a path                                                                     |
 | `search_files(path, regex, file_pattern)` | Search for patterns in files using regex                                                                 |
 | `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
-| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`). **Cannot start server processes** — use `finish()` to tell the user the command to run instead. |
+| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`). CLI/TUI apps (`node app.js`) run with a 5s timeout. Server commands (`npm start`, `npm run dev`) are blocked — the LLM tells you the command to run instead. |
 | `delete_file(path)`                       | Delete a file or directory                                                                               |
 | `search_web(query)`                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
 | `fetch_url(url, useBrowser?)`             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
