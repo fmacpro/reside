@@ -61,6 +61,48 @@ export class Agent {
     this.messages = [];
     this.iteration = 0;
     this.sessionActive = false;
+
+    // Loop detection state
+    this._toolCallHistory = [];
+    this._maxLoopHistory = 6;
+  }
+
+  /**
+   * Detect if the LLM is stuck in a tool-calling loop.
+   * Checks if the same tool has been called 3+ times with the same arguments
+   * within the recent history window.
+   * @returns {boolean}
+   */
+  _isLooping() {
+    const history = this._toolCallHistory;
+    if (history.length < 4) return false;
+
+    // Look at the last N calls and check for repetition
+    const last = history[history.length - 1];
+
+    // Count how many times this exact tool+args appears in recent history
+    let count = 0;
+    for (let i = history.length - 1; i >= Math.max(0, history.length - 6); i--) {
+      if (history[i].tool === last.tool && history[i].args === last.args) {
+        count++;
+      }
+    }
+
+    // 3+ identical calls = loop
+    if (count >= 3) return true;
+
+    // Also check for same tool called 4+ times with different args (e.g., fetch_url on different URLs)
+    let sameToolCount = 0;
+    for (let i = history.length - 1; i >= Math.max(0, history.length - 6); i--) {
+      if (history[i].tool === last.tool) {
+        sameToolCount++;
+      }
+    }
+
+    // 4+ calls to the same tool in a row = loop (e.g., fetch_url on different URLs)
+    if (sameToolCount >= 4) return true;
+
+    return false;
   }
 
   /**
@@ -135,6 +177,26 @@ export class Agent {
       // Execute each tool call
       for (const tc of toolCalls) {
         console.log(`\n🔧 ${tc.tool}(${JSON.stringify(tc.arguments)})`);
+
+        // Track tool calls for loop detection
+        this._toolCallHistory.push({ tool: tc.tool, args: JSON.stringify(tc.arguments) });
+        if (this._toolCallHistory.length > this._maxLoopHistory) {
+          this._toolCallHistory.shift();
+        }
+
+        // Detect loops: same tool called 3+ times with same arguments
+        if (this._isLooping()) {
+          console.log('   ⚠️ Loop detected — forcing text response');
+          // Reset history so we don't immediately trigger again
+          this._toolCallHistory = [];
+          // Inject a system message telling the LLM to respond with text
+          this.messages.push({
+            role: 'system',
+            content: 'You have been calling the same tool repeatedly. STOP calling tools and respond to the user directly with what you know. Use the information you already have.',
+          });
+          // Skip remaining tool calls in this iteration
+          break;
+        }
 
         const result = await this.toolEngine.execute(tc.tool, tc.arguments);
 
