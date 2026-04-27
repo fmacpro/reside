@@ -30,7 +30,7 @@ describe('Web Search + Fetch Integration', () => {
     const first = result.data.results[0];
     assert.ok(first.title, 'Result should have a title');
     assert.ok(first.url, 'Result should have a URL');
-    assert.ok(first.snippet, 'Result should have a snippet');
+    assert.ok(first.summary, 'Result should have a content summary');
 
     // Verify output format
     assert.match(result.output, /\d+\.\s+.+/); // Numbered list

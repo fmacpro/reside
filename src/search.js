@@ -160,17 +160,21 @@ function extractRealUrl(url) {
 }
 
 /**
- * Search the web using DuckDuckGo Lite via Puppeteer.
+ * Search the web using DuckDuckGo HTML via Puppeteer.
+ * After getting search results, follows the top N links to fetch actual
+ * article titles and content summaries using the browser (handles Cloudflare).
  *
  * @param {string} query - The search query
  * @param {object} [options] - Optional settings
  * @param {number} [options.timeout=15000] - Navigation timeout in ms
  * @param {number} [options.maxResults=8] - Maximum number of results to return
+ * @param {number} [options.followLinks=5] - Number of top results to follow for content (0 to disable)
  * @returns {Promise<{success: boolean, results?: Array, error?: string, output?: string}>}
  */
 export async function searchWeb(query, options = {}) {
   const timeout = options.timeout ?? 15_000;
   const maxResults = options.maxResults ?? 8;
+  const followLinks = options.followLinks ?? 5;
 
   if (!query || typeof query !== 'string' || !query.trim()) {
     return { success: false, error: 'Missing required argument: query' };
@@ -261,14 +265,59 @@ export async function searchWeb(query, options = {}) {
       result.url = extractRealUrl(result.url);
     }
 
-    const output = results
-      .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   ${r.url}`)
+    // Follow top N links to fetch actual article content
+    const followCount = Math.min(followLinks, results.length);
+    const followedResults = [];
+
+    for (let i = 0; i < followCount; i++) {
+      const result = results[i];
+      console.log(`   📄 Fetching content from: ${result.title}`);
+
+      // Use fetchUrlWithBrowser to handle Cloudflare and JS rendering
+      const fetched = await fetchUrlWithBrowser(result.url, {
+        timeout: 20_000,
+        challengeTimeout: 15_000,
+      });
+
+      if (fetched.success) {
+        // Truncate content to a reasonable summary length
+        const summary = fetched.content.length > 400
+          ? fetched.content.slice(0, 400) + '...'
+          : fetched.content;
+
+        followedResults.push({
+          ...result,
+          articleTitle: fetched.title || result.title,
+          summary,
+          contentLength: fetched.contentLength,
+        });
+      } else {
+        // If fetch fails, fall back to the DDG snippet
+        followedResults.push({
+          ...result,
+          articleTitle: result.title,
+          summary: result.snippet || '(content unavailable)',
+          contentLength: 0,
+        });
+      }
+    }
+
+    // Build output with actual article content
+    const output = followedResults
+      .map((r, i) => {
+        const lines = [
+          `${i + 1}. ${r.articleTitle}`,
+          `   ${r.summary}`,
+          `   ${r.url}`,
+        ];
+        return lines.join('\n');
+      })
       .join('\n\n');
 
     return {
       success: true,
       output,
-      data: { results },
+      data: { results: followedResults },
     };
   } catch (err) {
     return {
