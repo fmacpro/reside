@@ -21,10 +21,12 @@ export class ToolEngine {
   /**
    * @param {string} workspaceDir - Absolute path to the workspace
    * @param {import('./workspace.js').WorkspaceManager} [workspaceManager] - For git init on new dirs
+   * @param {object} [config] - Reside configuration
    */
-  constructor(workspaceDir, workspaceManager = null) {
+  constructor(workspaceDir, workspaceManager = null, config = {}) {
     this.workspaceDir = resolve(workspaceDir);
     this.workspaceManager = workspaceManager;
+    this.config = config;
   }
 
   /**
@@ -404,6 +406,11 @@ export class ToolEngine {
 
       fetch_url: async ({ url, useBrowser }) => {
         if (!url) return { success: false, error: 'Missing required argument: url' };
+
+        // Use config default if useBrowser not explicitly provided by the LLM
+        if (useBrowser === undefined || useBrowser === null) {
+          useBrowser = this.config.fetchUseBrowser === true;
+        }
 
         let result;
 

@@ -13,6 +13,7 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
  * @property {string} workdir - Base directory for project workspaces
  * @property {number} maxIterations - Maximum agent loop iterations per task
  * @property {boolean} autoCommit - Auto-commit after each tool execution
+ * @property {boolean} fetchUseBrowser - Default to browser (Puppeteer) for all fetch_url calls
  * @property {string} systemPrompt - Custom system prompt template
  */
 
@@ -22,6 +23,7 @@ const DEFAULT_CONFIG = {
   workdir: resolve(process.cwd(), 'workdir'),
   maxIterations: 25,
   autoCommit: true,
+  fetchUseBrowser: false,
   systemPrompt: `You are Reside, an AI coding assistant with direct filesystem access.
 You are in a conversational session - the user will give you tasks and ask follow-up questions.
 

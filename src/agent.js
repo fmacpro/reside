@@ -33,7 +33,7 @@ export class Agent {
    */
   async startSession(options = {}) {
     this.workspaceManager.init();
-    this.toolEngine = new ToolEngine(this.workspaceManager.getPath(), this.workspaceManager);
+    this.toolEngine = new ToolEngine(this.workspaceManager.getPath(), this.workspaceManager, this.config);
 
     console.log(`\n📁 Workdir: ${this.workspaceManager.getPath()}`);
     console.log(`🤖 Model: ${this.config.model}`);
