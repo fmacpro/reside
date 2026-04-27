@@ -170,9 +170,10 @@ The LLM has access to these tools:
 | `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
 | `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
 | `delete_file(path)`                       | Delete a file or directory                                                                               |
-| `search_web(query)`                     | Search the web for information (DuckDuckGo Lite, no API key needed)                          |
-| `fetch_url(url)`                        | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)              |
-| `finish(message)`                       | Signal that a task is complete                                                               |
+| `search_web(query)`                       | Search the web for information (DuckDuckGo Lite, no API key needed)                                      |
+| `fetch_url(url)`                          | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
+| `get_current_time(format?)`               | Get the current system date/time. Formats: "full" (default), "date", "time", "day", "month", "year", "timestamp" |
+| `finish(message)`                         | Signal that a task is complete                                                                           |
 
 ### Web Search
 
@@ -233,6 +234,7 @@ The `fetch_url(url)` tool fetches a web page and extracts its main article conte
 - **Preserves structure** — Outputs clean text with headings, lists, blockquotes, and code blocks formatted for readability
 - **Zero dependencies** — Uses only Node.js built-in `http`/`https` modules and a lightweight custom HTML parser
 - **Optional browser rendering** — For JavaScript-heavy pages (SPAs, dynamic content), pass `useBrowser=true` to render with Puppeteer before extraction
+- **Automatic fallback** — If the HTTP request is blocked with 403/401/429 (Cloudflare, bot protection), it automatically retries using Puppeteer with stealth plugins
 
 **How it works internally (default mode):**
 1. Fetches the page HTML via HTTPS with a browser-like User-Agent
@@ -248,6 +250,42 @@ The `fetch_url(url)` tool fetches a web page and extracts its main article conte
 3. Extracts text from `<main>`, `<article>`, `[role="main"]`, or `<body>` using the DOM TreeWalker API
 4. Strips hidden elements, scripts, styles, nav, footer, and header
 5. Returns clean text with structural spacing preserved
+
+### Get Current Time
+
+The `get_current_time(format?)` tool returns the current system date and time using Node.js built-in `Date` and `Intl.DateTimeFormat` APIs. It supports multiple output formats:
+
+| Format      | Example output                              |
+| ----------- | ------------------------------------------- |
+| `"full"`    | `Monday, 27 April 2026 at 20:35:36 British Summer Time (Europe/London, unix: 1777318536)` |
+| `"date"`    | `2026-04-27`                                |
+| `"time"`    | `20:35:36`                                  |
+| `"day"`     | `Monday`                                    |
+| `"month"`   | `April`                                     |
+| `"year"`    | `2026`                                      |
+| `"timestamp"` | `1777318536`                              |
+
+The LLM automatically selects the appropriate format based on the question (e.g., "what time is it?" → `"time"`, "what's the date?" → `"date"`). Structured data with all fields is always returned regardless of format.
+
+## Debug Mode
+
+To see full raw LLM responses, intermediate logs, and verbose tool output, use the `--debug` flag:
+
+```bash
+# Single task with debug output
+node src/index.js --debug "Create a simple HTML page"
+
+# Chat mode with debug output
+node src/index.js --chat --debug
+```
+
+In debug mode, the agent shows:
+- Full raw JSON arguments for each tool call
+- Complete tool output (truncated at 500 chars)
+- Intermediate logs from search and fetch operations
+- No compact one-liner summaries
+
+You can also enable debug mode permanently by setting `debugMode: true` in `~/.config/reside/config.json`.
 
 ## Workdir & Git
 
@@ -296,7 +334,7 @@ reside/
 │   ├── config.js             # Configuration system (file + env vars)
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
 │   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
-│   ├── tools.js              # Tool execution engine (11 tools: filesystem + web search + fetch)
+│   ├── tools.js              # Tool execution engine (12 tools: filesystem + web search + fetch + time)
 │   ├── fetchUrl.js           # URL fetching and article content extraction (zero deps)
 │   ├── search.js             # Puppeteer-based DuckDuckGo search engine
 │   ├── agent.js              # Main agent loop orchestrator

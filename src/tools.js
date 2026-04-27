@@ -131,8 +131,8 @@ export class ToolEngine {
         params: ['url', 'useBrowser?'],
       },
       get_current_time: {
-        desc: 'Get the current system date and time. Returns the current date, time, day of week, month, year, timezone, and Unix timestamp. Use this when you need to know the current date, time, or timezone.',
-        params: [],
+        desc: 'Get the current system date and/or time. Use format to request specific parts: "full" (default) for complete date+time+timezone, "date" for just the date, "time" for just the time, "day" for day of week, "month" for month name, "year" for the year, "timestamp" for Unix timestamp. Returns structured data with all fields regardless of format.',
+        params: ['format?'],
       },
       finish: {
         desc: 'Call this when the task is complete',
@@ -505,36 +505,59 @@ export class ToolEngine {
         };
       },
 
-      get_current_time: async () => {
+      get_current_time: async ({ format }) => {
         const now = new Date();
-        const formatter = new Intl.DateTimeFormat('en-GB', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          timeZoneName: 'long',
-        });
-        const formatted = formatter.format(now);
         const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-        return {
-          success: true,
-          output: `Current time: ${formatted}\nTimezone: ${timezone}\nUnix timestamp: ${Math.floor(now.getTime() / 1000)}`,
-          data: {
-            datetime: now.toISOString(),
-            date: now.toISOString().split('T')[0],
-            time: now.toTimeString().split(' ')[0],
-            timezone,
-            unixTimestamp: Math.floor(now.getTime() / 1000),
-            year: now.getFullYear(),
-            month: now.getMonth() + 1,
-            monthName: now.toLocaleString('en-GB', { month: 'long' }),
-            day: now.getDate(),
-            dayOfWeek: now.toLocaleString('en-GB', { weekday: 'long' }),
-          },
+        const unixTs = Math.floor(now.getTime() / 1000);
+
+        // Build structured data regardless of format requested
+        const data = {
+          datetime: now.toISOString(),
+          date: now.toISOString().split('T')[0],
+          time: now.toTimeString().split(' ')[0],
+          timezone,
+          unixTimestamp: unixTs,
+          year: now.getFullYear(),
+          month: now.getMonth() + 1,
+          monthName: now.toLocaleString('en-GB', { month: 'long' }),
+          day: now.getDate(),
+          dayOfWeek: now.toLocaleString('en-GB', { weekday: 'long' }),
         };
+
+        // Determine output based on format parameter
+        let output;
+        switch (format) {
+          case 'date':
+            output = data.date;
+            break;
+          case 'time':
+            output = data.time;
+            break;
+          case 'day':
+            output = data.dayOfWeek;
+            break;
+          case 'month':
+            output = data.monthName;
+            break;
+          case 'year':
+            output = String(data.year);
+            break;
+          case 'timestamp':
+            output = String(unixTs);
+            break;
+          case 'full':
+          default: {
+            const formatter = new Intl.DateTimeFormat('en-GB', {
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+              hour: '2-digit', minute: '2-digit', second: '2-digit',
+              timeZoneName: 'long',
+            });
+            output = `${formatter.format(now)} (${timezone}, unix: ${unixTs})`;
+            break;
+          }
+        }
+
+        return { success: true, output, data };
       },
 
       finish: async ({ message = 'Task completed' }) => {
