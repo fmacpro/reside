@@ -2,7 +2,7 @@
 
 A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands Qwen's native JSON tool call format — something most agentic IDE plugins get wrong.
 
-**Zero dependencies.** Pure Node.js. No npm install needed.
+**Minimal dependencies.** Pure Node.js with optional Puppeteer for web search.
 
 ## How It Works
 
@@ -25,6 +25,7 @@ You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5)
 
 - **Node.js** v18+ (tested on v24)
 - **Ollama** running locally with at least one model pulled
+- **Google Chrome** (for web search) — `search_web` uses Puppeteer with stealth plugin to bypass bot detection. Install Chrome via your package manager or download from [google.com/chrome](https://www.google.com/chrome/).
 
 ```bash
 # Install a model if you haven't already
@@ -175,7 +176,7 @@ The LLM has access to these tools:
 
 ### Web Search
 
-The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/lite/) — a free, privacy-respecting search endpoint that requires **no API key** and **no registration**. Results are parsed from the HTML response and returned as structured data (title, snippet, URL) for the LLM to use.
+The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/lite/) — a free, privacy-respecting search endpoint that requires **no API key** and **no registration**. Results are returned as structured data (title, snippet, URL) for the LLM to use.
 
 **How the LLM uses it:**
 ```
@@ -193,7 +194,9 @@ The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/
 🤖 The latest LTS version of Node.js is 22.x...
 ```
 
-The tool is implemented with zero dependencies — it uses Node.js built-in `https` module for the HTTP request and regex-based HTML parsing.
+The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to bypass bot detection. It launches a headless Chrome browser with a mobile viewport, navigates to DuckDuckGo Lite, and extracts results from the rendered HTML. Ads are automatically filtered out, and DuckDuckGo redirect URLs are resolved to their real destinations.
+
+> **Note:** `search_web` requires Google Chrome to be installed on your system. The default Chrome path is `/usr/bin/google-chrome`. You can modify the `executablePath` in [`src/search.js`](src/search.js:26) if Chrome is installed elsewhere.
 
 ### Web Search + Fetch Workflow
 
@@ -229,14 +232,22 @@ The `fetch_url(url)` tool fetches a web page and extracts its main article conte
 - **Detects the main content** — Uses a scoring system that evaluates text density, paragraph structure, link density, and semantic HTML elements (`<article>`, `<main>`, `[role="main"]`)
 - **Preserves structure** — Outputs clean text with headings, lists, blockquotes, and code blocks formatted for readability
 - **Zero dependencies** — Uses only Node.js built-in `http`/`https` modules and a lightweight custom HTML parser
+- **Optional browser rendering** — For JavaScript-heavy pages (SPAs, dynamic content), pass `useBrowser=true` to render with Puppeteer before extraction
 
-**How it works internally:**
+**How it works internally (default mode):**
 1. Fetches the page HTML via HTTPS with a browser-like User-Agent
 2. Parses the HTML into a lightweight DOM tree (no JSDOM needed)
 3. Gathers candidate content containers using positive selectors (`<article>`, `<main>`, content class patterns)
 4. Scores each candidate using heuristic features (text length, paragraph count, link density, semantic tags)
 5. Strips negative containers (nav, footer, aside, script, style, comment sections)
 6. Returns the best candidate as clean formatted text
+
+**Browser mode (`useBrowser=true`):**
+1. Launches a headless Chrome browser via Puppeteer (shared instance with `search_web`)
+2. Renders the page with JavaScript enabled
+3. Extracts text from `<main>`, `<article>`, `[role="main"]`, or `<body>` using the DOM TreeWalker API
+4. Strips hidden elements, scripts, styles, nav, footer, and header
+5. Returns clean text with structural spacing preserved
 
 ## Workdir & Git
 
@@ -278,7 +289,7 @@ node src/index.js --model llama3.2:latest "Your task here"
 
 ```
 reside/
-├── package.json              # Project manifest (ESM, zero deps)
+├── package.json              # Project manifest (ESM, puppeteer deps)
 ├── README.md                 # This file
 ├── src/
 │   ├── index.js              # CLI entry point with argument parsing
@@ -286,7 +297,8 @@ reside/
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
 │   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
 │   ├── tools.js              # Tool execution engine (11 tools: filesystem + web search + fetch)
-│   ├── fetchUrl.js            # URL fetching and article content extraction (zero deps)
+│   ├── fetchUrl.js           # URL fetching and article content extraction (zero deps)
+│   ├── search.js             # Puppeteer-based DuckDuckGo search engine
 │   ├── agent.js              # Main agent loop orchestrator
 │   └── workspace.js          # Workdir manager with per-app git repos
 └── workdir/                  # App/project directories (each with own git)
@@ -304,7 +316,9 @@ src/agent.js          Agent loop: sends messages to LLM, parses responses,
      │
      ├── src/ollama.js      HTTP client for Ollama API
      ├── src/parser.js      Parses Qwen's JSON tool call format
-     ├── src/tools.js       Filesystem tool implementations
+     ├── src/tools.js       Tool execution engine (filesystem + web)
+     ├── src/fetchUrl.js    URL fetching & content extraction (zero deps)
+     ├── src/search.js      Puppeteer-based DuckDuckGo search
      └── src/workspace.js   Workdir management with per-app git repos
 ```
 

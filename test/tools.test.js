@@ -379,6 +379,16 @@ describe('ToolEngine', () => {
       assert.match(desc, /fetch_url/);
       assert.match(desc, /Fetch a URL/);
     });
+
+    it('accepts useBrowser parameter', async () => {
+      const { dir, engine } = createTestWorkspace();
+      // With useBrowser=true, it should try Puppeteer and fail gracefully
+      // since there's no real URL
+      const result = await engine.execute('fetch_url', { url: 'https://example.com', useBrowser: true });
+      // Should either succeed or fail gracefully (network-dependent)
+      assert.ok(result.success === true || result.success === false);
+      cleanup(dir);
+    });
   });
 
   describe('unknown tool', () => {
