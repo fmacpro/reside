@@ -206,12 +206,14 @@ function isTopicPage(url) {
  * @param {number} [options.timeout=15000] - Navigation timeout in ms
  * @param {number} [options.maxResults=8] - Maximum number of results to return
  * @param {number} [options.followLinks=5] - Number of top results to follow for content (0 to disable)
+ * @param {boolean} [options.debugMode=false] - Enable verbose debug logging
  * @returns {Promise<{success: boolean, results?: Array, error?: string, output?: string}>}
  */
 export async function searchWeb(query, options = {}) {
   const timeout = options.timeout ?? 15_000;
   const maxResults = options.maxResults ?? 8;
   const followLinks = options.followLinks ?? 5;
+  const debugMode = options.debugMode === true;
 
   if (!query || typeof query !== 'string' || !query.trim()) {
     return { success: false, error: 'Missing required argument: query' };
@@ -289,6 +291,10 @@ export async function searchWeb(query, options = {}) {
       return items;
     }, maxResults);
 
+    if (debugMode) {
+      console.log(`   📊 DDG returned ${results.length} raw results for query: "${query}"`);
+    }
+
     if (results.length === 0) {
       return {
         success: true,
@@ -317,7 +323,9 @@ export async function searchWeb(query, options = {}) {
     for (let i = 0; i < followCount; i++) {
       const result = sortedResults[i];
       const isTopic = isTopicPage(result.url);
-      console.log(`   📄 Fetching content from: ${result.title}${isTopic ? ' (topic page)' : ''}`);
+      if (debugMode) {
+        console.log(`   📄 Fetching content from: ${result.title}${isTopic ? ' (topic page)' : ''}`);
+      }
 
       // Use fetchUrlWithBrowser to handle Cloudflare and JS rendering
       const fetched = await fetchUrlWithBrowser(result.url, {
@@ -346,6 +354,10 @@ export async function searchWeb(query, options = {}) {
           contentLength: 0,
         });
       }
+    }
+
+    if (debugMode) {
+      console.log(`   📊 Followed ${followedResults.length} results (attempted ${followCount})`);
     }
 
     // Build output with actual article content and plain URL
@@ -437,11 +449,13 @@ async function applyStealthEnhancements(page) {
  * @param {object} [options] - Optional settings
  * @param {number} [options.timeout=30000] - Navigation timeout in ms
  * @param {number} [options.challengeTimeout=30000] - Max time to wait for Cloudflare challenge resolution
+ * @param {boolean} [options.debugMode=false] - Enable verbose debug logging
  * @returns {Promise<{success: boolean, title?: string, content?: string, error?: string}>}
  */
 export async function fetchUrlWithBrowser(url, options = {}) {
   const timeout = options.timeout ?? 30_000;
   const challengeTimeout = options.challengeTimeout ?? 30_000;
+  const debugMode = options.debugMode === true;
 
   if (!url || typeof url !== 'string' || !url.trim()) {
     return { success: false, error: 'Missing required argument: url' };
@@ -491,8 +505,9 @@ export async function fetchUrlWithBrowser(url, options = {}) {
     const hasChallenge = await isCloudflareChallenge(page);
 
     if (hasChallenge) {
-      console.log(`   ⚠️ Cloudflare challenge detected for ${url}, waiting for resolution...`);
-
+      if (debugMode) {
+        console.log(`   ⚠️ Cloudflare challenge detected for ${url}, waiting for resolution...`);
+      }
       // Wait for the challenge to resolve
       const resolved = await waitForChallengeResolution(page, challengeTimeout);
 

@@ -19,6 +19,7 @@ USAGE:
   reside --list-models                   List available Ollama models
   reside --list-apps                     List apps in the workdir
   reside --set <key> <value>             Set a config value
+  reside --debug <task>                  Run with debug mode (verbose raw output)
   reside --help                          Show this help
 
 EXAMPLES:
@@ -48,6 +49,7 @@ async function main() {
   let task = '';
   let modelOverride = null;
   let chatMode = false;
+  let debugMode = false;
   let i = 0;
 
   while (i < args.length) {
@@ -58,6 +60,10 @@ async function main() {
         break;
       case '--chat':
         chatMode = true;
+        i++;
+        break;
+      case '--debug':
+        debugMode = true;
         i++;
         break;
       case '--file': {
@@ -96,8 +102,9 @@ async function main() {
     }
   }
 
-  // Apply model override
+  // Apply overrides
   if (modelOverride) config.model = modelOverride;
+  if (debugMode) config.debugMode = true;
 
   // Ensure model is available
   await ensureModel(config);

@@ -38,7 +38,69 @@ function renderText(text) {
   // Step 4: Convert <url> -> url
   result = result.replace(/<(https?:\/\/[^>]+)>/g, '$1');
 
+  // Step 5: Collapse "URL:\nhttps://..." -> "URL: https://..." (LLMs sometimes put URLs on a new line after "URL:")
+  result = result.replace(/(URL|Link|Website):\s*\n\s*(https?:\/\/[^\s\n]+)/gi, '$1: $2');
+
   return result;
+}
+
+/**
+ * Generate a brief one-line status for a successful tool execution result.
+ * Instead of dumping raw output, this provides a concise summary per tool type.
+ *
+ * @param {string} tool - The tool name
+ * @param {string} output - The full output from the tool
+ * @param {object} [data] - Optional structured data from the tool result
+ * @returns {string} A brief status string
+ */
+function _briefToolStatus(tool, output, data) {
+  if (!output) return '(completed)';
+
+  switch (tool) {
+    case 'search_web': {
+      // Use the data.results array length for accurate count (more reliable than parsing output text)
+      let resultCount = 0;
+      if (data && Array.isArray(data.results)) {
+        resultCount = data.results.length;
+      } else {
+        // Fallback: count numbered lines in output
+        resultCount = (output.match(/^\d+\.\s/m) || []).length;
+      }
+      const label = resultCount === 1 ? 'result' : 'results';
+      return `Found ${resultCount || '?'} ${label}`;
+    }
+    case 'fetch_url': {
+      // Show content length only — the delimiter line is not useful as a title
+      const charCount = output.length;
+      return `Extracted content (${charCount} chars)`;
+    }
+    case 'read_file': {
+      const lines = output.split('\n').length;
+      return `Read ${lines} lines (${output.length} chars)`;
+    }
+    case 'write_to_file':
+    case 'edit_file': {
+      return `Written ${output.length} bytes`;
+    }
+    case 'create_directory': {
+      return 'Directory created';
+    }
+    case 'list_files': {
+      const fileCount = (output.match(/^[^\s]/m) || []).length;
+      return `Listed ${fileCount || '?'} items`;
+    }
+    case 'execute_command': {
+      const lines = output.split('\n').length;
+      return `Command completed (${lines} lines, ${output.length} chars)`;
+    }
+    case 'finish': {
+      return output;
+    }
+    default:
+      // Generic: show first line truncated
+      const first = output.split('\n')[0] || '';
+      return first.length > 80 ? first.substring(0, 80) + '...' : first;
+  }
 }
 
 /**
@@ -168,6 +230,32 @@ export class Agent {
       if (toolCalls.length === 0) {
         lastText = text || content;
         if (lastText) {
+          // Detect fabricated placeholder responses — the model is making up info instead of using tools
+          const placeholderPatterns = [
+            /\[insert[^\]]*\]/i,
+            /\[your[^\]]*\]/i,
+            /\[placeholder[^\]]*\]/i,
+            /\[brief[^\]]*\]/i,
+            /\[link[^\]]*\]/i,
+            /\[url[^\]]*\]/i,
+            /\[source[^\]]*\]/i,
+            /\[add[^\]]*\]/i,
+            /\[provide[^\]]*\]/i,
+            // Template syntax like {{search_results[0].url}} — the model should use real URLs from the output
+            /\{\{[^}]+\}\}/,
+          ];
+          const hasPlaceholders = placeholderPatterns.some(p => p.test(lastText));
+
+          if (hasPlaceholders) {
+            // Re-prompt the model to actually use tools instead of fabricating
+            console.log('   ⚠️ Response contains placeholder text — re-prompting to use tools');
+            this.messages.push({
+              role: 'system',
+              content: 'Your previous response contained placeholder text like "[Insert Current Event]" or template syntax like "{{search_results[0].url}}" instead of real information. You MUST use the search_web() tool to get current information, then use the REAL URLs from the search results output when calling fetch_url(). Do NOT use template variables like {{...}} — just copy the actual URLs from the search results. Do NOT fabricate or make up information.',
+            });
+            continue;
+          }
+
           console.log(`\n🤖 ${renderText(lastText)}`);
         }
         finished = true;
@@ -176,12 +264,40 @@ export class Agent {
 
       // Execute each tool call
       for (const tc of toolCalls) {
-        console.log(`\n🔧 ${tc.tool}(${JSON.stringify(tc.arguments)})`);
+        if (this.config.debugMode) {
+          // Debug mode: show full raw JSON arguments
+          console.log(`\n🔧 ${tc.tool}(${JSON.stringify(tc.arguments)})`);
+        } else {
+          // Compact mode: show tool name and first string arg value
+          const argPreview = tc.arguments
+            ? Object.values(tc.arguments).find(v => typeof v === 'string' && v.length > 0) || ''
+            : '';
+          const displayArgs = argPreview
+            ? `"${argPreview.length > 60 ? argPreview.substring(0, 60) + '...' : argPreview}"`
+            : '';
+          console.log(`\n🔧 ${tc.tool}${displayArgs ? `(${displayArgs})` : '()'}`);
+        }
 
         // Track tool calls for loop detection
         this._toolCallHistory.push({ tool: tc.tool, args: JSON.stringify(tc.arguments) });
         if (this._toolCallHistory.length > this._maxLoopHistory) {
           this._toolCallHistory.shift();
+        }
+
+        // Detect: calling fetch_url on a URL that was just returned by search_web in the same iteration.
+        // search_web already fetches article content — fetch_url is redundant here.
+        if (tc.tool === 'fetch_url' && this._lastSearchResults) {
+          const url = tc.arguments?.url || '';
+          const isFromSearch = this._lastSearchResults.some(r => r.url === url);
+          if (isFromSearch) {
+            console.log('   ⚠️ fetch_url called on a search result — search_web already fetched this content. Skipping.');
+            // Inject a system message telling the LLM to use the search results directly
+            this.messages.push({
+              role: 'system',
+              content: 'You just called fetch_url() on a URL that was already returned by search_web(). search_web() already fetches the full content of each article and returns summaries with URLs. You do NOT need to call fetch_url() on search results. Present the search results directly as a formatted list with titles, summaries, and URLs. Only use fetch_url() if the user asks for the full text of a specific article.',
+            });
+            continue;
+          }
         }
 
         // Detect loops: same tool called 3+ times with same arguments
@@ -200,11 +316,23 @@ export class Agent {
 
         const result = await this.toolEngine.execute(tc.tool, tc.arguments);
 
+        // Track search results so we can detect redundant fetch_url calls
+        if (tc.tool === 'search_web' && result.success && result.data?.results) {
+          this._lastSearchResults = result.data.results;
+        }
+
         if (result.success) {
-          const outputPreview = result.output
-            ? (result.output.length > 500 ? result.output.substring(0, 500) + '...' : result.output)
-            : '(completed)';
-          console.log(`   ✅ ${outputPreview}`);
+          if (this.config.debugMode) {
+            // Debug mode: show full raw output (truncated at 500 chars)
+            const outputPreview = result.output
+              ? (result.output.length > 500 ? result.output.substring(0, 500) + '...' : result.output)
+              : '(completed)';
+            console.log(`   ✅ ${outputPreview}`);
+          } else {
+            // Compact mode: show brief one-line status per tool type
+            const briefStatus = _briefToolStatus(tc.tool, result.output, result.data);
+            console.log(`   ✅ ${briefStatus}`);
+          }
         } else {
           console.log(`   ❌ ${result.error}`);
         }
@@ -213,14 +341,20 @@ export class Agent {
           ? (result.output || '(completed successfully)')
           : `Error: ${result.error}`;
 
+        // Include structured data if available (e.g., search results with URLs)
+        const toolResult = {
+          tool: tc.tool,
+          arguments: tc.arguments,
+          result: result.success ? 'success' : 'error',
+          output: resultContent,
+        };
+        if (result.data) {
+          toolResult.data = result.data;
+        }
+
         this.messages.push({
           role: 'tool',
-          content: JSON.stringify({
-            tool: tc.tool,
-            arguments: tc.arguments,
-            result: result.success ? 'success' : 'error',
-            output: resultContent,
-          }),
+          content: JSON.stringify(toolResult),
         });
 
         if (tc.tool === 'finish') {

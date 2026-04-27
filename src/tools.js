@@ -391,7 +391,7 @@ export class ToolEngine {
       search_web: async ({ query }) => {
         if (!query) return { success: false, error: 'Missing required argument: query' };
 
-        const result = await searchWeb(query);
+        const result = await searchWeb(query, { debugMode: this.config.debugMode === true });
 
         if (!result.success) {
           return { success: false, error: result.error };
@@ -416,7 +416,7 @@ export class ToolEngine {
 
         if (useBrowser === true || useBrowser === 'true') {
           // Use Puppeteer for JavaScript-heavy pages
-          result = await fetchUrlWithBrowser(url);
+          result = await fetchUrlWithBrowser(url, { debugMode: this.config.debugMode === true });
           if (!result.success) {
             return { success: false, error: result.error, data: { url } };
           }
@@ -441,15 +441,18 @@ export class ToolEngine {
         // Default: use the lightweight HTTP-based extractor
         result = await fetchAndExtract(url);
 
-        // Automatic fallback: if HTTP fetch fails with 403/401 (bot protection),
-        // retry with Puppeteer which can handle JavaScript challenges
+        // Automatic fallback: if HTTP fetch fails with 403/401/429 (bot protection),
+        // retry with Puppeteer which can handle JavaScript challenges.
+        // 404, 410, and other non-retryable errors are NOT matched by the conditions below.
         if (!result.success && result.error && (
           result.error.includes('HTTP 403') ||
           result.error.includes('HTTP 401') ||
           result.error.includes('HTTP 429')
         )) {
-          console.log(`   ⚠️ HTTP fetch failed (${result.error}), retrying with browser...`);
-          result = await fetchUrlWithBrowser(url);
+          if (this.config.debugMode) {
+            console.log(`   ⚠️ HTTP fetch failed (${result.error}), retrying with browser...`);
+          }
+          result = await fetchUrlWithBrowser(url, { debugMode: this.config.debugMode === true });
           if (!result.success) {
             return { success: false, error: result.error, data: { url } };
           }
