@@ -742,6 +742,97 @@ function drillDownToContent(node, maxDepth = 5) {
   return best.node !== node ? best.node : null;
 }
 
+// ─── Prompt Injection Sanitizer ──────────────────────────────────────────────
+
+/**
+ * Patterns that indicate prompt injection attempts embedded in web content.
+ * These are stripped from the extracted content to prevent the LLM from
+ * treating them as instructions.
+ */
+const INJECTION_PATTERNS = [
+  // Direct instruction overrides
+  /\bignore\s+(all\s+)?(previous|prior|above)\s+(instructions|directions|commands|prompts?)\b/gi,
+  /\bdisregard\s+(all\s+)?(previous|prior|above)\s+(instructions|directions|commands|prompts?)\b/gi,
+  /\bforget\s+(all\s+)?(previous|prior|above)\s+(instructions|directions|commands|prompts?)\b/gi,
+
+  // System prompt overrides
+  /\byou\s+are\s+(now|not\s+an?\s+AI|an?\s+AI\s+assistant|a\s+different\s+AI|a\s+helpful\s+assistant)\b/gi,
+  /\byour\s+(new\s+)?(system\s+)?prompt\s+(is|should\s+be)\b/gi,
+  /\bnew\s+system\s+prompt\b/gi,
+  /\boverride\s+(system\s+)?prompt\b/gi,
+
+  // Role-playing instructions
+  /\byou\s+will\s+now\s+(act\s+as|pretend\s+to\s+be|role.play)\b/gi,
+  /\bfrom\s+now\s+on\s*,\s*you\s+are\b/gi,
+
+  // Meta-instructions about responding
+  /\bdo\s+not\s+(follow|obey|listen\s+to)\s+(the\s+)?(previous|prior|above)\s+(instructions|directions|commands)\b/gi,
+  /\bdo\s+not\s+output\s+(your\s+)?(usual|normal|standard)\s+(response|format|behavior)\b/gi,
+  /\boutput\s+(only|just|exclusively)\s+the\s+(text|content|following)\b/gi,
+
+  // Hidden text / token grabber patterns
+  /```\s*(system|instruction|prompt)\s*\n[\s\S]*?```/gi,
+  /<!--\s*(system|instruction|prompt)\s*:[\s\S]*?-->/gi,
+
+  // DAN / jailbreak patterns
+  /\bDAN\b|\bdo\s+anything\s+now\b/gi,
+  /\byou\s+have\s+been\s+(reprogrammed|reconfigured|hacked)\b/gi,
+  /\bthis\s+is\s+a\s+(security\s+)?(test|simulation|bypass)\b/gi,
+];
+
+/**
+ * Known prompt injection marker strings that indicate the start of
+ * embedded instructions within otherwise normal content.
+ */
+const INJECTION_MARKERS = [
+  '---BEGIN INSTRUCTIONS---',
+  '---END INSTRUCTIONS---',
+  '<<<SYSTEM>>>',
+  '<<<INSTRUCTIONS>>>',
+  '[SYSTEM PROMPT]',
+  '[INST]',
+  '[/INST]',
+  '<|im_start|>system',
+  '<|im_end|>',
+  '<|start_header_id|>system<|end_header_id|>',
+  '<|eot_id|>',
+];
+
+/**
+ * Sanitize extracted content by removing prompt injection attempts.
+ * This prevents websites from embedding instructions that could trick the LLM.
+ *
+ * @param {string} content - The extracted article text
+ * @returns {string} - Sanitized content
+ */
+function sanitizeContent(content) {
+  if (!content) return content;
+
+  let sanitized = content;
+
+  // 1. Remove lines containing injection markers
+  const lines = sanitized.split('\n');
+  const filtered = lines.filter(line => {
+    const trimmed = line.trim().toLowerCase();
+    // Check if line is entirely an injection marker
+    for (const marker of INJECTION_MARKERS) {
+      if (trimmed.includes(marker.toLowerCase())) return false;
+    }
+    return true;
+  });
+  sanitized = filtered.join('\n');
+
+  // 2. Remove injection pattern matches from the text
+  for (const pattern of INJECTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, '[content removed]');
+  }
+
+  // 3. Remove excessive whitespace from sanitization artifacts
+  sanitized = sanitized.replace(/\n{4,}/g, '\n\n\n').trim();
+
+  return sanitized;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -790,9 +881,9 @@ export async function fetchAndExtract(url, options = {}) {
       };
     }
 
-    const { title, content } = extractContent(html);
+    const { title, content: rawContent } = extractContent(html);
 
-    if (!content || content.length < 50) {
+    if (!rawContent || rawContent.length < 50) {
       return {
         success: false,
         error: 'Could not extract meaningful content from the page',
@@ -800,10 +891,21 @@ export async function fetchAndExtract(url, options = {}) {
       };
     }
 
+    // Sanitize: strip prompt injection attempts from web content
+    const sanitized = sanitizeContent(rawContent);
+
+    if (!sanitized || sanitized.length < 50) {
+      return {
+        success: false,
+        error: 'Content was empty after sanitization',
+        url: finalUrl,
+      };
+    }
+
     // Truncate if too long
-    const truncated = content.length > maxLength
-      ? content.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
-      : content;
+    const truncated = sanitized.length > maxLength
+      ? sanitized.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
+      : sanitized;
 
     return {
       success: true,
