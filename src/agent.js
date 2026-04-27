@@ -355,9 +355,14 @@ export class Agent {
           // that was never created, or installing deps in a non-existent dir).
           const criticalTools = ['write_file', 'create_directory', 'edit_file'];
           if (criticalTools.includes(tc.tool)) {
+            // For create_directory "already exists" errors, give specific guidance
+            let guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
+            if (tc.tool === 'create_directory' && result.error?.includes('already exists')) {
+              guidance = `The create_directory() tool failed because "${tc.arguments?.path}" already exists. Do NOT retry the same name — it will keep failing. The error message suggests an available alternative name — use that one instead. For example, if the error suggests "time-app-2", call create_directory({"path":"time-app-2"}).`;
+            }
             this.messages.push({
               role: 'system',
-              content: `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`,
+              content: guidance,
             });
             // Skip remaining tool calls in this iteration so the LLM can respond
             break;

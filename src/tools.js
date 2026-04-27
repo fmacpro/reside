@@ -453,9 +453,17 @@ export class ToolEngine {
           // Check if it's a non-empty directory (likely an existing app)
           const entries = readdirSync(fullPath);
           if (entries.length > 0 && !entries.every(e => e.startsWith('.'))) {
+            // Suggest a numbered alternative name (e.g., "time-app-2", "time-app-3")
+            const baseName = path.replace(/-\d+$/, ''); // Strip existing suffix if any
+            let counter = 2;
+            let altName = `${baseName}-${counter}`;
+            while (existsSync(join(this.workspaceDir, altName))) {
+              counter++;
+              altName = `${baseName}-${counter}`;
+            }
             return {
               success: false,
-              error: `Directory "${path}" already exists and contains files. Use a different name or delete it first with delete_file().`,
+              error: `Directory "${path}" already exists and contains files. Use a different name like "${altName}" or delete it first with delete_file().`,
             };
           }
         }
