@@ -182,20 +182,24 @@ export async function searchWeb(query, options = {}) {
   try {
     page = await browser.newPage();
 
-    // Mobile viewport + stealth headers to avoid bot detection
+    // Desktop viewport for richer search results
     await page.setViewport({
-      width: 768,
-      height: 2048,
-      deviceScaleFactor: 2,
-      isMobile: true,
-      hasTouch: true,
+      width: 1920,
+      height: 1080,
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
     });
 
-    await page.setExtraHTTPHeaders({ Referer: 'https://www.google.com/' });
+    await page.setExtraHTTPHeaders({
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+      'Referer': 'https://www.google.com/',
+    });
     await page.setBypassCSP(true);
 
     const encodedQuery = encodeURIComponent(query.trim());
-    const searchUrl = `https://lite.duckduckgo.com/lite/?q=${encodedQuery}`;
+    const searchUrl = `https://html.duckduckgo.com/html/?q=${encodedQuery}`;
 
     await page.goto(searchUrl, {
       waitUntil: 'networkidle2',
@@ -214,18 +218,19 @@ export async function searchWeb(query, options = {}) {
     // Extract results from the HTML, filtering out ads
     const results = await page.evaluate((max) => {
       const items = [];
-      const linkNodes = document.querySelectorAll('a.result-link');
-      const snippetNodes = document.querySelectorAll('td.result-snippet');
+      const resultNodes = document.querySelectorAll('.result');
 
-      const count = Math.min(linkNodes.length, max * 2); // grab extra to account for filtered ads
-      for (let i = 0; i < count; i++) {
-        const link = linkNodes[i];
-        const snippet = snippetNodes[i];
+      for (const result of resultNodes) {
+        const link = result.querySelector('.result__a');
+        const snippet = result.querySelector('.result__snippet');
+        const urlEl = result.querySelector('.result__url');
+
+        if (!link) continue;
+
         const url = link.href || '';
         const title = (link.textContent || '').trim();
 
-        // Skip ads: DDG ads use /y.js tracking URLs (possibly URL-encoded),
-        // or have "more info" disclosure titles, or are wrapped in /l/?uddg= containing /y.js
+        // Skip ads: DDG ads use /y.js tracking URLs
         const decodedUrl = decodeURIComponent(url);
         if (decodedUrl.includes('/y.js') || title.toLowerCase() === 'more info') {
           continue;
@@ -235,6 +240,7 @@ export async function searchWeb(query, options = {}) {
           title,
           url,
           snippet: snippet ? (snippet.textContent || '').trim() : '',
+          displayedUrl: urlEl ? (urlEl.textContent || '').trim() : '',
         });
 
         if (items.length >= max) break;
