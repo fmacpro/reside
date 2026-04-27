@@ -8,12 +8,94 @@
 
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { extractFromHtml } from './fetchUrl.js';
 
 puppeteer.use(StealthPlugin());
 
 /** Shared browser instance (lazy-initialized) */
 let _browser = null;
 let _browserRefCount = 0;
+
+/**
+ * Known Cloudflare challenge indicators in page content/title.
+ */
+const CF_CHALLENGE_INDICATORS = [
+  'Just a moment...',
+  'Checking your browser',
+  'Please wait while we verify',
+  'Attention Required! | Cloudflare',
+  'cf-browser-verification',
+  'challenge-form',
+  'cf-challenge',
+  '_cf_chl_opt',
+  'cdn-cgi/challenge-platform',
+];
+
+/**
+ * Known Cloudflare challenge selectors in the DOM.
+ */
+const CF_CHALLENGE_SELECTORS = [
+  '#cf-challenge-container',
+  '#challenge-form',
+  '#cf-please-wait',
+  '#cf-error-details',
+  '[id^="cf-challenge-"]',
+  'iframe[src*="challenge-platform"]',
+];
+
+/**
+ * Detect if the current page is showing a Cloudflare challenge.
+ * @param {import('puppeteer').Page} page
+ * @returns {Promise<boolean>}
+ */
+async function isCloudflareChallenge(page) {
+  try {
+    const title = await page.title();
+    for (const indicator of CF_CHALLENGE_INDICATORS) {
+      if (title.includes(indicator)) return true;
+    }
+
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || '');
+    for (const indicator of CF_CHALLENGE_INDICATORS) {
+      if (bodyText.includes(indicator)) return true;
+    }
+
+    // Check for challenge-specific elements
+    for (const selector of CF_CHALLENGE_SELECTORS) {
+      const el = await page.$(selector);
+      if (el) return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Wait for a Cloudflare challenge to complete.
+ * Polls the page until the challenge is resolved or timeout is reached.
+ *
+ * @param {import('puppeteer').Page} page
+ * @param {number} timeout - Max time to wait in ms
+ * @returns {Promise<boolean>} - Whether the challenge was resolved
+ */
+async function waitForChallengeResolution(page, timeout = 30_000) {
+  const start = Date.now();
+  const pollInterval = 500;
+
+  while (Date.now() - start < timeout) {
+    const stillChallenge = await isCloudflareChallenge(page);
+    if (!stillChallenge) {
+      // Give the page a moment to load actual content after challenge
+      await new Promise(r => setTimeout(r, 1000));
+      return true;
+    }
+    await new Promise(r => setTimeout(r, pollInterval));
+  }
+
+  return false;
+}
 
 /**
  * Get or create the shared Puppeteer browser instance.
@@ -30,6 +112,12 @@ async function getBrowser() {
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--single-process',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-web-security',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-popup-blocking',
       ],
     });
     _browserRefCount = 0;
@@ -194,16 +282,65 @@ export async function searchWeb(query, options = {}) {
 }
 
 /**
+ * Apply stealth enhancements to a page to avoid bot detection.
+ * Overrides navigator.webdriver, adds realistic plugins, etc.
+ *
+ * @param {import('puppeteer').Page} page
+ */
+async function applyStealthEnhancements(page) {
+  // Override navigator properties that bots leak
+  await page.evaluateOnNewDocument(() => {
+    // Remove the webdriver property
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => undefined,
+    });
+
+    // Add realistic plugins
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin' },
+      ],
+    });
+
+    // Add realistic languages
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-GB', 'en-US', 'en'],
+    });
+
+    // Override chrome runtime
+    window.chrome = {
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+      app: {},
+    };
+
+    // Override permissions
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters)
+    );
+  });
+}
+
+/**
  * Fetch a URL and extract its content using Puppeteer.
+ * Includes Cloudflare challenge detection and automatic resolution.
  * Useful for pages that require JavaScript rendering.
  *
  * @param {string} url - The URL to fetch
  * @param {object} [options] - Optional settings
- * @param {number} [options.timeout=20000] - Navigation timeout in ms
+ * @param {number} [options.timeout=30000] - Navigation timeout in ms
+ * @param {number} [options.challengeTimeout=30000] - Max time to wait for Cloudflare challenge resolution
  * @returns {Promise<{success: boolean, title?: string, content?: string, error?: string}>}
  */
 export async function fetchUrlWithBrowser(url, options = {}) {
-  const timeout = options.timeout ?? 20_000;
+  const timeout = options.timeout ?? 30_000;
+  const challengeTimeout = options.challengeTimeout ?? 30_000;
 
   if (!url || typeof url !== 'string' || !url.trim()) {
     return { success: false, error: 'Missing required argument: url' };
@@ -215,76 +352,87 @@ export async function fetchUrlWithBrowser(url, options = {}) {
   try {
     page = await browser.newPage();
 
+    // Use a desktop-like viewport for better compatibility with news sites
     await page.setViewport({
-      width: 768,
-      height: 2048,
-      deviceScaleFactor: 2,
-      isMobile: true,
-      hasTouch: true,
+      width: 1920,
+      height: 1080,
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
     });
 
-    await page.setExtraHTTPHeaders({ Referer: 'https://www.google.com/' });
-    await page.setBypassCSP(true);
+    // Set realistic browser headers
+    await page.setExtraHTTPHeaders({
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'Accept-Language': 'en-GB,en-US;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Referer': 'https://www.google.com/',
+      'Sec-Ch-Ua': '"Google Chrome";v="120", "Chromium";v="120", "Not?A_Brand";v="99"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Linux"',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+    });
 
+    await page.setBypassCSP(true);
+    await applyStealthEnhancements(page);
+
+    // Navigate with a longer timeout and 'load' event first (more reliable than networkidle2 for challenged pages)
     await page.goto(url, {
-      waitUntil: 'networkidle2',
+      waitUntil: 'load',
       timeout,
     });
 
-    // Extract page title and text content
-    const result = await page.evaluate(() => {
-      const title = document.title || '';
+    // Check for Cloudflare challenge
+    const hasChallenge = await isCloudflareChallenge(page);
 
-      // Try to get main content, falling back to body
-      const main =
-        document.querySelector('main') ||
-        document.querySelector('article') ||
-        document.querySelector('[role="main"]') ||
-        document.body;
+    if (hasChallenge) {
+      console.log(`   ⚠️ Cloudflare challenge detected for ${url}, waiting for resolution...`);
 
-      // Get all text, preserving structure
-      const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT, null, false);
-      const textParts = [];
-      let node;
-      while ((node = walker.nextNode())) {
-        const parent = node.parentElement;
-        if (!parent) continue;
+      // Wait for the challenge to resolve
+      const resolved = await waitForChallengeResolution(page, challengeTimeout);
 
-        // Skip hidden elements, scripts, styles, nav, footer
-        const tag = parent.tagName?.toLowerCase() || '';
-        if (['script', 'style', 'noscript', 'nav', 'footer', 'header'].includes(tag)) continue;
-        const style = parent.style;
-        if (style?.display === 'none' || style?.visibility === 'hidden') continue;
-
-        const text = (node.textContent || '').trim();
-        if (!text) continue;
-
-        // Add structural spacing
-        const blockTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li', 'div', 'section'];
-        const prefix = blockTags.includes(tag) ? '\n\n' : ' ';
-        textParts.push(prefix + text);
+      if (!resolved) {
+        return {
+          success: false,
+          error: `Cloudflare challenge did not resolve within ${challengeTimeout}ms. The site may be blocking automated access.`,
+          data: { url, challengeDetected: true },
+        };
       }
 
-      return {
-        title,
-        content: textParts.join('').trim(),
-      };
-    });
+      // After challenge resolves, wait for network to settle
+      try {
+        await page.waitForNetworkIdle({ idleTime: 1000, timeout: 5000 });
+      } catch {
+        // Non-critical, continue anyway
+      }
+    }
 
-    if (!result.content || result.content.length < 50) {
+    // Wait a bit more for dynamic content to render
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Get the full page HTML and use the same heuristic-based content extraction
+    // as the HTTP fetch path for consistent results
+    const html = await page.content();
+    const { title, content } = extractFromHtml(html);
+
+    if (!content) {
       return {
         success: false,
         error: 'Page appears to have no readable content.',
-        data: { title: result.title, url, contentLength: 0 },
+        data: { title, url, contentLength: 0 },
       };
     }
 
     return {
       success: true,
-      title: result.title,
-      content: result.content,
+      title,
+      content,
       url,
-      contentLength: result.content.length,
+      contentLength: content.length,
     };
   } catch (err) {
     return {

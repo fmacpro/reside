@@ -836,6 +836,37 @@ function sanitizeContent(content) {
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
+ * Extract the main article content from raw HTML.
+ * Uses heuristic scoring to find the best content container.
+ * Also sanitizes prompt injection attempts.
+ *
+ * @param {string} html - Raw HTML
+ * @param {number} [maxLength=50000] - Maximum content length to return
+ * @returns {{ title: string, content: string, textLength: number }}
+ */
+export function extractFromHtml(html, maxLength = 50000) {
+  const { title, content: rawContent } = extractContent(html);
+
+  if (!rawContent || rawContent.length < 50) {
+    return { title: title || '', content: '', textLength: 0 };
+  }
+
+  // Sanitize: strip prompt injection attempts from web content
+  const sanitized = sanitizeContent(rawContent);
+
+  if (!sanitized || sanitized.length < 50) {
+    return { title: title || '', content: '', textLength: 0 };
+  }
+
+  // Truncate if too long
+  const truncated = sanitized.length > maxLength
+    ? sanitized.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
+    : sanitized;
+
+  return { title: title || '', content: truncated, textLength: truncated.length };
+}
+
+/**
  * Fetch a URL and extract the main article content.
  *
  * @param {string} url - The URL to fetch
@@ -881,9 +912,9 @@ export async function fetchAndExtract(url, options = {}) {
       };
     }
 
-    const { title, content: rawContent } = extractContent(html);
+    const { title, content } = extractFromHtml(html, maxLength);
 
-    if (!rawContent || rawContent.length < 50) {
+    if (!content) {
       return {
         success: false,
         error: 'Could not extract meaningful content from the page',
@@ -891,26 +922,10 @@ export async function fetchAndExtract(url, options = {}) {
       };
     }
 
-    // Sanitize: strip prompt injection attempts from web content
-    const sanitized = sanitizeContent(rawContent);
-
-    if (!sanitized || sanitized.length < 50) {
-      return {
-        success: false,
-        error: 'Content was empty after sanitization',
-        url: finalUrl,
-      };
-    }
-
-    // Truncate if too long
-    const truncated = sanitized.length > maxLength
-      ? sanitized.slice(0, maxLength) + `\n\n[...content truncated at ${maxLength} characters]`
-      : sanitized;
-
     return {
       success: true,
-      title: title || '',
-      content: truncated,
+      title,
+      content,
       url: finalUrl,
     };
   } catch (err) {
