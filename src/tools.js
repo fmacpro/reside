@@ -90,11 +90,11 @@ export class ToolEngine {
         params: ['path'],
       },
       write_file: {
-        desc: 'Write content to a file (creates directories if needed)',
+        desc: 'Write content to a file (creates directories if needed). Files must be inside an app subdirectory, not directly in the workdir root.',
         params: ['path', 'content'],
       },
       edit_file: {
-        desc: 'Make targeted edits to an existing file by replacing text',
+        desc: 'Edit an existing file by replacing text. Use write_file to create NEW files.',
         params: ['path', 'old_string', 'new_string'],
       },
       list_files: {
@@ -106,8 +106,8 @@ export class ToolEngine {
         params: ['path', 'regex', 'file_pattern'],
       },
       execute_command: {
-        desc: 'Run a shell command in the workspace directory (10s timeout; use & for long-running processes like servers)',
-        params: ['command'],
+        desc: 'Run a shell command (10s timeout; use & for long-running processes like servers). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls.',
+        params: ['command', 'cwd?'],
       },
       create_directory: {
         desc: 'Create a directory (and parent directories if needed)',
@@ -145,6 +145,15 @@ export class ToolEngine {
         if (!path) return { success: false, error: 'Missing required argument: path' };
         if (content === undefined || content === null) return { success: false, error: 'Missing required argument: content' };
         const fullPath = this._resolvePath(path);
+        const rel = relative(this.workspaceDir, fullPath);
+        // Reject writing directly to the workdir root — files must be inside an app subdirectory.
+        // Allow hidden files (starting with '.') for edge cases like .gitkeep.
+        if (rel && !rel.includes(sep) && !rel.startsWith('.')) {
+          return {
+            success: false,
+            error: `Cannot write files directly in the workdir root. Create an app directory first using create_directory(), then write files inside it (e.g., "my-app/${path}").`,
+          };
+        }
         this._ensureDir(join(fullPath, '..'));
         writeFileSync(fullPath, String(content), 'utf-8');
         return {
@@ -156,7 +165,12 @@ export class ToolEngine {
 
       edit_file: async ({ path, old_string, new_string }) => {
         if (!path) return { success: false, error: 'Missing required argument: path' };
-        if (!old_string) return { success: false, error: 'Missing required argument: old_string' };
+        if (!old_string) {
+          return {
+            success: false,
+            error: 'edit_file requires old_string to find text to replace. To create a NEW file, use write_file() instead. To append to an existing file, use edit_file with the last line as old_string.',
+          };
+        }
         if (new_string === undefined) return { success: false, error: 'Missing required argument: new_string' };
 
         const fullPath = this._resolvePath(path);
@@ -231,7 +245,7 @@ export class ToolEngine {
         }
       },
 
-      execute_command: async ({ command }) => {
+      execute_command: async ({ command, cwd }) => {
         if (!command) return { success: false, error: 'Missing required argument: command' };
 
         // Security: block destructive commands
@@ -242,10 +256,19 @@ export class ToolEngine {
           }
         }
 
+        // Resolve working directory: use cwd if provided, otherwise workspace root
+        let workingDir = this.workspaceDir;
+        if (cwd) {
+          workingDir = this._resolvePath(cwd);
+          if (!existsSync(workingDir)) {
+            return { success: false, error: `Directory not found: ${cwd}. Create it first with create_directory().` };
+          }
+        }
+
         // Use spawn for async execution with timeout
         return new Promise(resolve => {
           const child = spawn('/bin/sh', ['-c', command], {
-            cwd: this.workspaceDir,
+            cwd: workingDir,
             env: { ...process.env, PATH: process.env.PATH },
             stdio: ['pipe', 'pipe', 'pipe'],
             shell: false,

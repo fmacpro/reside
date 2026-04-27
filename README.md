@@ -161,23 +161,24 @@ The LLM has access to these tools:
 | Tool | Description |
 |------|-------------|
 | `read_file(path)` | Read the contents of a file |
-| `write_file(path, content)` | Write content to a file (creates directories if needed) |
-| `edit_file(path, old_string, new_string)` | Make targeted edits to an existing file by replacing text |
+| `write_file(path, content)` | Create a NEW file with content (creates directories if needed) |
+| `edit_file(path, old_string, new_string)` | Edit an EXISTING file by replacing text (use `write_file` for new files) |
 | `list_files(path)` | List files and directories in a path |
 | `search_files(path, regex, file_pattern)` | Search for patterns in files using regex |
 | `create_directory(path)` | Create a directory (and parents if needed); auto-initializes git for top-level app dirs |
-| `execute_command(command)` | Run a shell command in the workdir directory |
+| `execute_command(command, cwd?)` | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
 | `delete_file(path)` | Delete a file or directory |
 | `finish(message)` | Signal that a task is complete |
 
 ## Workdir & Git
 
-The workdir is a container directory (default: `workdirs/`). Each app/project you create gets its own subdirectory with an independent git repository:
+The workdir is a container directory (default: `workdir/`). Each app/project you create gets its own subdirectory with an independent git repository:
 
 - **Per-app git repos** — `create_directory("my-app")` auto-initializes git in `my-app/`
 - **Auto-committed** — Changes are committed to each app's git repo after each tool execution iteration
 - **Sandboxed** — Path traversal is blocked; tools can't escape the workdir
 - **Independent history** — Each app has its own commit log, branches, and state
+- **No files in the root** — Files must always be written inside an app subdirectory (e.g., `my-app/app.js`), never directly in the workdir root. The `write_file` tool will reject root-level paths with a clear error message.
 
 ```bash
 # List all apps with git status

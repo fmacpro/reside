@@ -56,20 +56,20 @@ describe('ToolEngine', () => {
   });
 
   describe('write_file', () => {
-    it('writes a new file', async () => {
+    it('writes a new file inside an app subdirectory', async () => {
       const { dir, engine } = createTestWorkspace();
-      const result = await engine.execute('write_file', { path: 'hello.txt', content: 'Hello!' });
+      const result = await engine.execute('write_file', { path: 'my-app/hello.txt', content: 'Hello!' });
       assert.equal(result.success, true);
       assert.match(result.output, /Written/);
-      assert.equal(readFileSync(join(dir, 'hello.txt'), 'utf-8'), 'Hello!');
+      assert.equal(readFileSync(join(dir, 'my-app', 'hello.txt'), 'utf-8'), 'Hello!');
       cleanup(dir);
     });
 
-    it('creates parent directories', async () => {
+    it('creates parent directories inside an app subdirectory', async () => {
       const { dir, engine } = createTestWorkspace();
-      const result = await engine.execute('write_file', { path: 'a/b/c/deep.txt', content: 'deep' });
+      const result = await engine.execute('write_file', { path: 'my-app/a/b/c/deep.txt', content: 'deep' });
       assert.equal(result.success, true);
-      assert.equal(readFileSync(join(dir, 'a/b/c/deep.txt'), 'utf-8'), 'deep');
+      assert.equal(readFileSync(join(dir, 'my-app', 'a/b/c/deep.txt'), 'utf-8'), 'deep');
       cleanup(dir);
     });
 
@@ -84,6 +84,32 @@ describe('ToolEngine', () => {
       const { dir, engine } = createTestWorkspace();
       const result = await engine.execute('write_file', { path: 'x.txt' });
       assert.equal(result.success, false);
+      cleanup(dir);
+    });
+  });
+
+  describe('write_file - root-level protection', () => {
+    it('rejects writing directly to workdir root', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', { path: 'app.js', content: 'x' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Cannot write files directly in the workdir root/);
+      cleanup(dir);
+    });
+
+    it('allows writing inside an app subdirectory', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', { path: 'my-app/app.js', content: 'x' });
+      assert.equal(result.success, true);
+      assert.equal(existsSync(join(dir, 'my-app', 'app.js')), true);
+      cleanup(dir);
+    });
+
+    it('allows hidden files at root (e.g., .gitkeep)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', { path: '.gitkeep', content: '' });
+      assert.equal(result.success, true);
+      assert.equal(existsSync(join(dir, '.gitkeep')), true);
       cleanup(dir);
     });
   });
@@ -247,6 +273,30 @@ describe('ToolEngine', () => {
       const result = await engine.execute('execute_command', { command: 'sleep 30' });
       assert.equal(result.success, true);
       assert.match(result.output, /timed out/);
+      cleanup(dir);
+    });
+
+    it('runs command in specified cwd directory', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app'));
+      writeFileSync(join(dir, 'my-app', 'test.txt'), 'hello', 'utf-8');
+      const result = await engine.execute('execute_command', {
+        command: 'cat test.txt',
+        cwd: 'my-app',
+      });
+      assert.equal(result.success, true);
+      assert.equal(result.output, 'hello');
+      cleanup(dir);
+    });
+
+    it('fails if cwd directory does not exist', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('execute_command', {
+        command: 'pwd',
+        cwd: 'nonexistent-app',
+      });
+      assert.equal(result.success, false);
+      assert.match(result.error, /not found/);
       cleanup(dir);
     });
   });
