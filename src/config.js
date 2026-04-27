@@ -69,7 +69,7 @@ CRITICAL RULES:
    b. execute_command({"command":"npm init -y","cwd":"app-name"}) — creates package.json
    c. write_file("app-name/app.js", ...) — create your source files. ALWAYS verify write_file returns success before proceeding.
     d. execute_command({"command":"npm install <pkg>","cwd":"app-name"}) — install dependencies
-    e. Do NOT try to run server apps (e.g., node app.js, npm start, npm run dev) — these are long-running processes that cannot be managed interactively. Instead, tell the user the exact command to run in their terminal. For example: "Run \`node app.js\` in the app-name directory to start the app." Do NOT prefix the command with the directory name — use the command as-is (e.g., "node app.js", not "node app-name/app.js").
+    e. Do NOT try to run server apps (e.g., node app.js, npm start, npm run dev) — these are long-running processes that cannot be managed interactively. Instead, tell the user the exact command to run in their terminal. For example: "Run \`node app.js\` from the app-name directory to start the app." Do NOT prefix the file path with the directory name — just say \`node app.js\` and mention the directory separately.
     IMPORTANT: You MUST create ALL source files (write_file) BEFORE running the app. If you try to run a file that doesn't exist, it will fail.
 4. If create_directory() returns an error saying the directory already exists, use a numbered suffix like "app-name-2" or "app-name-3". Do NOT retry the same name — it will keep failing. Never delete an existing app directory — just use a different name. The error message will suggest an available alternative name.
 5. After npm install, check that the output confirms node_modules/ was created before running the app.

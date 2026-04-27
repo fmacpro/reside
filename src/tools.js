@@ -316,7 +316,7 @@ export class ToolEngine {
         if (isServerCommand) {
           return {
             success: false,
-            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${command}\` in the ${cwd ? cwd : 'app'} directory to start the app." Do NOT prefix the command with the directory name — just use the command as-is (e.g., "node app.js", not "node time-app/app.js").`,
+            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${command}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${command}\` and mention the directory separately.`,
             data: { exitCode: null, stdout: '', stderr: '' },
           };
         }
