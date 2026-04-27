@@ -34,6 +34,7 @@ describe('Web Search + Fetch Integration', () => {
 
     // Verify output format
     assert.match(result.output, /\d+\.\s+.+/); // Numbered list
+    assert.match(result.output, /URL: https?:\/\//); // Plain-text URL present
 
     console.log('=== search_web results ===');
     console.log(result.output.slice(0, 500));
