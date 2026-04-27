@@ -463,7 +463,7 @@ export class ToolEngine {
             }
             return {
               success: false,
-              error: `Directory "${path}" already exists and contains files. Use a different name like "${altName}" or delete it first with delete_file().`,
+              error: `Directory "${path}" already exists and contains files. Use a different name like "${altName}" instead.`,
             };
           }
         }
