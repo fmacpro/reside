@@ -309,4 +309,176 @@ describe('LLM Simulation — App Creation Workflow', () => {
 
     cleanup(dir);
   });
+
+  it('rejects npm install without cwd when apps exist', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Create an existing app directory (simulating an app that was already created)
+    await engine.execute('create_directory', { path: 'existing-app' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'existing-app' });
+
+    // Try to npm install without cwd — should fail with hint about available apps
+    const result = await engine.execute('execute_command', {
+      command: 'npm install left-pad',
+      // No cwd provided!
+    });
+
+    assert.equal(result.success, false, 'Should reject npm install without cwd');
+    assert.match(result.error, /should run inside an app directory/i, 'Error should mention running inside an app');
+    assert.match(result.error, /existing-app/, 'Error should mention the available app name');
+    assert.match(result.error, /cwd/, 'Error should mention the cwd parameter');
+
+    cleanup(dir);
+  });
+
+  it('allows npm install in an existing app (simulating follow-up prompt)', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Step 1: Create the app (simulating first user message)
+    await engine.execute('create_directory', { path: 'my-app' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'my-app' });
+    await engine.execute('write_file', { path: 'my-app/app.js', content: 'console.log("Hello");' });
+
+    // Verify initial state
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'my-app', 'package.json')), true);
+    assert.equal(existsSync(join(dir, 'my-app', 'app.js')), true);
+
+    // Step 2: Simulate a follow-up prompt — install a dependency in the existing app
+    const result = await engine.execute('execute_command', {
+      command: 'npm install left-pad',
+      cwd: 'my-app',  // Correctly uses cwd
+    });
+
+    assert.equal(result.success, true, 'Should allow npm install in existing app');
+    assert.match(result.output, /node_modules/, 'Output should mention node_modules');
+    assert.equal(existsSync(join(dir, 'my-app', 'node_modules')), true);
+
+    // Verify the dependency was added to package.json
+    const pkg = JSON.parse(readFileSync(join(dir, 'my-app', 'package.json'), 'utf-8'));
+    assert.ok(pkg.dependencies, 'package.json should have dependencies');
+    assert.ok(pkg.dependencies['left-pad'], 'package.json should include left-pad');
+
+    cleanup(dir);
+  });
+
+  it('simulates full new-app workflow: create → init → write → install → run CLI', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Step 1: Create directory
+    let result = await engine.execute('create_directory', { path: 'weather-cli' });
+    assert.equal(result.success, true);
+
+    // Step 2: npm init
+    result = await engine.execute('execute_command', { command: 'npm init -y', cwd: 'weather-cli' });
+    assert.equal(result.success, true);
+
+    // Step 3: Write the app file (a simple CLI that takes a city argument)
+    result = await engine.execute('write_file', {
+      path: 'weather-cli/app.js',
+      content: `const https = require('https');
+const city = process.argv[2] || 'London';
+console.log(\`Weather for \${city}: 18°C, partly cloudy\`);`,
+    });
+    assert.equal(result.success, true);
+
+    // Step 4: Install a dependency (simulating the LLM adding axios or similar)
+    result = await engine.execute('execute_command', {
+      command: 'npm install left-pad',
+      cwd: 'weather-cli',
+    });
+    assert.equal(result.success, true, 'Should install package in the new app');
+
+    // Verify node_modules exists
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'weather-cli', 'node_modules')), true);
+
+    // Verify package.json was updated
+    const pkg = JSON.parse(readFileSync(join(dir, 'weather-cli', 'package.json'), 'utf-8'));
+    assert.ok(pkg.dependencies, 'package.json should have dependencies');
+    assert.ok(pkg.dependencies['left-pad'], 'package.json should include left-pad');
+
+    // Step 5: Run the CLI app (should complete within 5s timeout)
+    result = await engine.execute('execute_command', {
+      command: 'node app.js Paris',
+      cwd: 'weather-cli',
+    });
+    assert.equal(result.success, true, 'CLI app should run and complete');
+    assert.match(result.output, /Weather for Paris/, 'Output should show the weather for Paris');
+
+    cleanup(dir);
+  });
+
+  it('simulates follow-up prompt: install additional dependency in existing app', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Phase 1: Initial app creation (simulating first user message)
+    await engine.execute('create_directory', { path: 'todo-app' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'todo-app' });
+    await engine.execute('write_file', {
+      path: 'todo-app/app.js',
+      content: 'console.log("Todo app ready");',
+    });
+
+    // Verify initial state
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'todo-app', 'package.json')), true);
+    let pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
+    assert.equal(pkg.dependencies, undefined, 'Initially no dependencies');
+
+    // Phase 2: Simulate a follow-up prompt like "add chalk for colored output"
+    let result = await engine.execute('execute_command', {
+      command: 'npm install chalk',
+      cwd: 'todo-app',
+    });
+    assert.equal(result.success, true, 'Should install chalk in existing app');
+    assert.equal(existsSync(join(dir, 'todo-app', 'node_modules')), true);
+
+    // Verify package.json was updated with the new dependency
+    pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
+    assert.ok(pkg.dependencies, 'package.json should now have dependencies');
+    assert.ok(pkg.dependencies.chalk, 'package.json should include chalk');
+
+    // Phase 3: Simulate another follow-up prompt like "also add inquirer for interactive prompts"
+    result = await engine.execute('execute_command', {
+      command: 'npm install inquirer',
+      cwd: 'todo-app',
+    });
+    assert.equal(result.success, true, 'Should install inquirer in existing app');
+    assert.equal(existsSync(join(dir, 'todo-app', 'node_modules')), true);
+
+    // Verify both dependencies exist
+    pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
+    assert.ok(pkg.dependencies.chalk, 'package.json should still have chalk');
+    assert.ok(pkg.dependencies.inquirer, 'package.json should now have inquirer');
+
+    cleanup(dir);
+  });
+
+  it('rejects npm install without cwd even when multiple apps exist', async () => {
+    const { dir, engine } = createTestWorkspace();
+
+    // Create multiple existing apps
+    await engine.execute('create_directory', { path: 'app-one' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'app-one' });
+
+    await engine.execute('create_directory', { path: 'app-two' });
+    await engine.execute('execute_command', { command: 'npm init -y', cwd: 'app-two' });
+
+    // Try npm install without cwd — should list both available apps
+    const result = await engine.execute('execute_command', {
+      command: 'npm install left-pad',
+      // No cwd!
+    });
+
+    assert.equal(result.success, false, 'Should reject npm install without cwd');
+    assert.match(result.error, /app-one/, 'Error should mention app-one');
+    assert.match(result.error, /app-two/, 'Error should mention app-two');
+    assert.match(result.error, /cwd/, 'Error should mention cwd parameter');
+
+    cleanup(dir);
+  });
 });
