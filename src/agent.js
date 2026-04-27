@@ -93,6 +93,11 @@ function _briefToolStatus(tool, output, data) {
       const lines = output.split('\n').length;
       return `Command completed (${lines} lines, ${output.length} chars)`;
     }
+    case 'get_current_time': {
+      // Show the date/time in a compact format
+      const lines = output.split('\n');
+      return lines[0] || output;
+    }
     case 'finish': {
       return output;
     }

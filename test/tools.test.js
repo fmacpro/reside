@@ -415,8 +415,9 @@ describe('ToolEngine', () => {
       assert.ok(names.includes('delete_file'));
       assert.ok(names.includes('search_web'));
       assert.ok(names.includes('fetch_url'));
+      assert.ok(names.includes('get_current_time'));
       assert.ok(names.includes('finish'));
-      assert.equal(names.length, 11);
+      assert.equal(names.length, 12);
     });
   });
 

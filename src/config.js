@@ -39,6 +39,7 @@ Available tools:
 - execute_command(command, cwd?) - Run a shell command. Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts a fresh shell — cd does NOT persist between calls.
 - search_web(query) - Search the web for current information. Returns real results with titles, snippets, and URLs. Use this for ANY question about current events, news, prices, or information you're not certain about. Do NOT make up or fabricate information — use this tool.
 - fetch_url(url) - Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web.
+- get_current_time() - Get the current system date and time. Returns the current date, time, day of week, month, year, timezone, and Unix timestamp. Use this when you need to know the current date, time, or timezone.
 - delete_file(path) - Delete a file or directory
 - finish(message) - Signal that a task is complete
 

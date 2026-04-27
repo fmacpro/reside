@@ -130,6 +130,10 @@ export class ToolEngine {
         desc: 'Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web. Automatically falls back to a real browser (Puppeteer) if the HTTP request gets blocked (403/401). For JavaScript-heavy pages, set useBrowser=true to force browser rendering.',
         params: ['url', 'useBrowser?'],
       },
+      get_current_time: {
+        desc: 'Get the current system date and time. Returns the current date, time, day of week, month, year, timezone, and Unix timestamp. Use this when you need to know the current date, time, or timezone.',
+        params: [],
+      },
       finish: {
         desc: 'Call this when the task is complete',
         params: ['message'],
@@ -498,6 +502,38 @@ export class ToolEngine {
           success: true,
           output,
           data: { title: result.title, url: result.url, contentLength: result.content.length },
+        };
+      },
+
+      get_current_time: async () => {
+        const now = new Date();
+        const formatter = new Intl.DateTimeFormat('en-GB', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          timeZoneName: 'long',
+        });
+        const formatted = formatter.format(now);
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        return {
+          success: true,
+          output: `Current time: ${formatted}\nTimezone: ${timezone}\nUnix timestamp: ${Math.floor(now.getTime() / 1000)}`,
+          data: {
+            datetime: now.toISOString(),
+            date: now.toISOString().split('T')[0],
+            time: now.toTimeString().split(' ')[0],
+            timezone,
+            unixTimestamp: Math.floor(now.getTime() / 1000),
+            year: now.getFullYear(),
+            month: now.getMonth() + 1,
+            monthName: now.toLocaleString('en-GB', { month: 'long' }),
+            day: now.getDate(),
+            dayOfWeek: now.toLocaleString('en-GB', { weekday: 'long' }),
+          },
         };
       },
 
