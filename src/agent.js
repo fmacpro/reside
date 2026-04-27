@@ -142,9 +142,13 @@ export class Agent {
     // Loop detection state
     this._toolCallHistory = [];
     this._maxLoopHistory = 6;
+    this._loopDetectedCount = 0;
 
     // Track directories created in this session to prevent redundant create_directory calls
     this._createdDirs = new Set();
+
+    // Track npm install without cwd failures to detect repeated failures
+    this._npmInstallNoCwdFailures = 0;
 
   }
 
@@ -348,7 +352,17 @@ export class Agent {
 
         // Detect loops: same tool called 3+ times with same arguments
         if (this._isLooping()) {
-          console.log('   ⚠️ Loop detected — forcing text response');
+          this._loopDetectedCount++;
+          console.log(`   ⚠️ Loop detected (#${this._loopDetectedCount}) — forcing text response`);
+
+          // If loop has been detected multiple times, the LLM is ignoring guidance.
+          // Force the session to end — the LLM cannot be trusted to break out of the loop.
+          if (this._loopDetectedCount >= 2) {
+            console.log('   ⚠️ Repeated loop detection — ending session.');
+            finished = true;
+            break;
+          }
+
           // Reset history so we don't immediately trigger again
           this._toolCallHistory = [];
           // Inject a system message telling the LLM to respond with text
@@ -434,14 +448,38 @@ export class Agent {
           }
         }
 
-        // For npm install failures, inject guidance telling the LLM what went wrong.
+        // For npm install failures, inject guidance telling the LLM what went wrong,
+        // then break out of the tool loop so the LLM MUST address the failure before
+        // continuing. The LLM consistently ignores guidance and continues writing code
+        // that depends on packages that were never installed.
         if (!result.success && tc.tool === 'execute_command') {
           const cmd = tc.arguments?.command || '';
           const errMsg = result.error || '';
 
           if (/^npm\s+install/.test(cmd.trim())) {
+            // Inject the tool result so the LLM sees the actual error
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: `Error: ${result.error}`,
+              }),
+            });
+
             // Check if the error is about missing cwd (running in workdir root instead of app dir)
             if (errMsg.includes('should run inside an app directory') || errMsg.includes('cwd')) {
+              this._npmInstallNoCwdFailures++;
+
+              // If the LLM has repeatedly failed to use cwd, force the session to end.
+              // The LLM consistently ignores guidance and keeps retrying without cwd.
+              if (this._npmInstallNoCwdFailures >= 2) {
+                console.log('   ⚠️ Repeated npm install without cwd — ending session.');
+                finished = true;
+                break;
+              }
+
               this.messages.push({
                 role: 'system',
                 content: `The npm install command failed because you forgot to set the cwd parameter. You MUST always use cwd when running npm commands inside an app directory. For example: execute_command({"command":"${cmd}","cwd":"<app-name>"}). Look at the error message to see which apps are available, then pick the correct one. Do NOT retry without cwd.`,
@@ -452,6 +490,42 @@ export class Agent {
                 role: 'system',
                 content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry by searching the web. Use search_web() to find the correct package name. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
               });
+            }
+
+            // Break out of the tool loop — the LLM MUST address the failure before continuing.
+            // This prevents the LLM from writing code that depends on packages that were never installed.
+            break;
+          }
+
+          // Detect common API usage errors in run commands (node app.js, python app.py, etc.)
+          // The LLM often writes code with API patterns that don't match the installed version.
+          // For example, inquirer v9+ is ESM-only and doesn't support require('inquirer').prompt.
+          const isRunCommand = /^(node|python3?|deno|bun)\s/.test(cmd.trim());
+          if (isRunCommand) {
+            const knownErrors = [
+              {
+                pattern: /inquirer\.prompt is not a function/i,
+                guidance: 'The "inquirer" package v9+ is ESM-only and does not support require("inquirer").prompt in CommonJS. To fix this, either: (1) Use dynamic import: const { default: inquirer } = await import("inquirer"); then use inquirer.prompt(), OR (2) Install an older CJS-compatible version: npm install inquirer@8.2.6, OR (3) Set "type": "module" in package.json and use import statements instead of require(). Do NOT reinstall inquirer — the version is fine, the import syntax needs to change.',
+              },
+            ];
+
+            const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
+            if (matchedError) {
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: tc.tool,
+                  arguments: tc.arguments,
+                  result: 'error',
+                  output: `Error: ${result.error}`,
+                }),
+              });
+              this.messages.push({
+                role: 'system',
+                content: matchedError.guidance,
+              });
+              // Break out of the tool loop so the LLM fixes the code instead of retrying the same command
+              break;
             }
           }
         }

@@ -27,6 +27,32 @@ export class ToolEngine {
     this.workspaceDir = resolve(workspaceDir);
     this.workspaceManager = workspaceManager;
     this.config = config;
+
+    // Track the "current working app" — the most recently created or written-to app directory.
+    // When execute_command is called without cwd, it will automatically use this app's directory.
+    this._currentApp = null;
+  }
+
+  /**
+   * Extract the top-level app directory name from a path.
+   * Returns null if the path is not inside an app subdirectory.
+   * @param {string} path
+   * @returns {string|null}
+   */
+  _extractAppName(path) {
+    if (!path) return null;
+    // Remove leading ./ or /
+    const normalized = path.replace(/^[./\\]+/, '');
+    // Get the first path segment
+    const firstSegment = normalized.split(/[/\\]/)[0];
+    // Must be a non-hidden, non-empty directory name
+    if (!firstSegment || firstSegment.startsWith('.')) return null;
+    // Verify it's actually a directory in the workspace
+    const appPath = join(this.workspaceDir, firstSegment);
+    if (existsSync(appPath) && statSync(appPath).isDirectory()) {
+      return firstSegment;
+    }
+    return null;
   }
 
   /**
@@ -111,7 +137,7 @@ export class ToolEngine {
         params: ['path', 'regex', 'file_pattern'],
       },
       execute_command: {
-        desc: 'Run a shell command (10s timeout, 5s for run commands like node app.js). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls. CLI/TUI apps (node app.js) will run and complete normally. Server commands (npm start, npm run dev) are blocked — tell the user the command to run instead.',
+        desc: 'Run a shell command (10s timeout, 5s for run commands like node app.js). Automatically runs inside the current app directory if one has been created. Use cwd to override and run in a different app. Each call starts fresh — cd does NOT persist between calls. CLI/TUI apps (node app.js) will run and complete normally. Server commands (npm start, npm run dev) are blocked — tell the user the command to run instead.',
         params: ['command', 'cwd?'],
       },
       create_directory: {
@@ -209,6 +235,12 @@ export class ToolEngine {
             success: false,
             error: `File ${path} was written but size mismatch: expected ${expectedSize} bytes, got ${actualSize} bytes`,
           };
+        }
+
+        // Track the app directory as the current working app for auto-cwd in execute_command
+        const appName = this._extractAppName(path);
+        if (appName) {
+          this._currentApp = appName;
         }
 
         return {
@@ -311,21 +343,48 @@ export class ToolEngine {
           }
         }
 
-        // Resolve working directory: use cwd if provided, otherwise workspace root
+        // Resolve working directory: use cwd if provided, otherwise workspace root.
+        // If no cwd is provided but we have a current app context, auto-set cwd to that app.
+        let effectiveCwd = cwd;
+        if (!effectiveCwd && this._currentApp) {
+          effectiveCwd = this._currentApp;
+        }
+
         let workingDir = this.workspaceDir;
-        if (cwd) {
-          workingDir = this._resolvePath(cwd);
+        if (effectiveCwd) {
+          workingDir = this._resolvePath(effectiveCwd);
           if (!existsSync(workingDir)) {
-            return { success: false, error: `Directory not found: ${cwd}. Create it first with create_directory().` };
+            return { success: false, error: `Directory not found: ${effectiveCwd}. Create it first with create_directory().` };
           }
         }
 
         // Pre-execution check: verify npm packages exist and are compatible before installing.
         // The LLM often picks non-existent or broken packages (e.g., "curses").
         // Run `npm view <pkg>` to check if the package exists on the registry and get its metadata.
+        // For multi-package installs (e.g., "npm install figlet cfonts"), we check ALL packages
+        // first and report which ones are valid and which aren't, so the LLM can retry with
+        // just the valid packages.
         const npmInstallMatch = command.trim().match(/^npm\s+install\s+(.+)$/);
         if (npmInstallMatch) {
           const packages = npmInstallMatch[1].split(/\s+/).filter(p => !p.startsWith('-') && !p.startsWith('@'));
+
+          // Track valid and invalid packages for multi-package installs
+          const validPackages = [];
+          const invalidPackages = [];
+          const esmOnlyPackages = [];
+
+          // Determine if the project uses CommonJS (default) or ESM.
+          // If package.json has "type": "module", the project is ESM and can use import.
+          // Otherwise, it's CommonJS and require() is used — ESM-only packages won't work.
+          let projectIsCjs = true;
+          try {
+            const pkgJsonPath = join(workingDir, 'package.json');
+            if (existsSync(pkgJsonPath)) {
+              const pkgJson = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+              projectIsCjs = pkgJson.type !== 'module';
+            }
+          } catch {}
+
           for (const pkg of packages) {
             try {
               // Check if package exists and get its metadata (latest version, description, engine requirements)
@@ -335,11 +394,8 @@ export class ToolEngine {
                 cwd: workingDir,
               });
               if (!viewResult.trim()) {
-                return {
-                  success: false,
-                  error: `Package "${pkg}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`,
-                  data: { exitCode: null, stdout: '', stderr: '' },
-                };
+                invalidPackages.push(pkg);
+                continue;
               }
 
               // Check engine compatibility: if the package specifies a Node.js engine requirement,
@@ -359,21 +415,124 @@ export class ToolEngine {
                   const minVersion = nodeRequirement.replace(/[>=<^~ ]/g, '');
                   const minMajor = parseInt(minVersion.split('.')[0], 10);
                   if (!isNaN(minMajor) && minMajor < 12) {
-                    return {
-                      success: false,
-                      error: `Package "${pkg}@${latestVersion}" requires Node.js ${nodeRequirement}, but the current system has Node.js v24.13.1. This package is likely outdated and incompatible. Use search_web() to find a maintained alternative.`,
-                      data: { exitCode: null, stdout: '', stderr: '' },
-                    };
+                    invalidPackages.push(pkg);
+                    continue;
                   }
                 }
               }
+
+              // Check if the package is ESM-only (has "type": "module" and no CJS exports).
+              // ESM-only packages won't work with require() in CommonJS projects.
+              // We check two things:
+              //   1. Does the package have "type": "module"?
+              //   2. Does the package's exports lack a "require" condition?
+              // If both are true, the package is ESM-only and won't work with require().
+              if (projectIsCjs) {
+                try {
+                  const typeResult = execSync(`npm view "${pkg}" type 2>/dev/null`, {
+                    encoding: 'utf-8',
+                    timeout: 3000,
+                    cwd: workingDir,
+                  }).trim();
+
+                  if (typeResult === 'module') {
+                    // Package is ESM — check if it has a CJS export path
+                    let hasCjsExport = false;
+                    try {
+                      const exportsResult = execSync(`npm view "${pkg}" exports --json 2>/dev/null`, {
+                        encoding: 'utf-8',
+                        timeout: 3000,
+                        cwd: workingDir,
+                      }).trim();
+
+                      if (exportsResult && exportsResult !== 'undefined') {
+                        const exports = JSON.parse(exportsResult);
+                        // Check if the package provides a CommonJS export path.
+                        // The exports field can be:
+                        //   1. A string: "./index.js" — single entry point for all systems.
+                        //      Node.js handles CJS/ESM interop automatically.
+                        //   2. An object with subpath keys (starting with "."):
+                        //      { ".": "...", "./feature": "..." } — values are file paths
+                        //      or condition objects. String values are just file paths and
+                        //      don't indicate CJS support.
+                        //   3. An object with condition keys:
+                        //      { "import": "...", "require": "...", "default": "..." }
+                        //
+                        // For case 1 (string): single entry point works for all — NOT ESM-only.
+                        // For case 2 (subpath map): recurse into values to find condition objects.
+                        // For case 3 (condition object): check if "require" is a key.
+                        const hasRequireCondition = (obj, isTopLevel = true) => {
+                          if (typeof obj === 'string') {
+                            // Top-level string = single entry point for all systems
+                            // Nested string = file path in a subpath map, no condition info
+                            return isTopLevel;
+                          }
+                          if (typeof obj !== 'object' || obj === null) return false;
+                          const keys = Object.keys(obj);
+                          // If any key starts with ".", this is a subpath map (case 2).
+                          // Recurse into values (not top-level) to find condition objects.
+                          if (keys.some(k => k.startsWith('.'))) {
+                            return Object.values(obj).some(v => hasRequireCondition(v, false));
+                          }
+                          // Condition object (case 3) — check for "require" key
+                          return 'require' in obj;
+                        };
+                        hasCjsExport = hasRequireCondition(exports);
+                      }
+                    } catch {}
+
+                    if (!hasCjsExport) {
+                      // ESM-only package — warn the LLM
+                      esmOnlyPackages.push(pkg);
+                      continue;
+                    }
+                  }
+                } catch {
+                  // If we can't determine the type, assume it's fine
+                }
+              }
+
+              validPackages.push(pkg);
             } catch {
-              return {
-                success: false,
-                error: `Package "${pkg}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`,
-                data: { exitCode: null, stdout: '', stderr: '' },
-              };
+              invalidPackages.push(pkg);
             }
+          }
+
+          // Build error message for invalid packages (non-existent)
+          let errorMsg = '';
+          if (invalidPackages.length > 0) {
+            if (invalidPackages.length === 1) {
+              errorMsg = `Package "${invalidPackages[0]}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`;
+            } else {
+              errorMsg = `Packages "${invalidPackages.join('", "')}" do not exist on the npm registry. Use search_web() to find the correct package names before installing.`;
+            }
+          }
+
+          // Build warning message for ESM-only packages (exist but incompatible with CommonJS)
+          let esmMsg = '';
+          if (esmOnlyPackages.length > 0) {
+            if (esmOnlyPackages.length === 1) {
+              esmMsg = `Package "${esmOnlyPackages[0]}" is ESM-only (type: module) and does not provide a CommonJS export. It will NOT work with require() in a CommonJS project. To use it, either: (1) Use dynamic import: const { default: pkg } = await import("${esmOnlyPackages[0]}"); in your code, OR (2) Set "type": "module" in package.json and use import statements, OR (3) Install an older CJS-compatible version by specifying a version number, e.g.: npm install ${esmOnlyPackages[0]}@8.2.6 (replace with the actual version you want).`;
+            } else {
+              esmMsg = `Packages "${esmOnlyPackages.join('", "')}" are ESM-only (type: module) and do not provide CommonJS exports. They will NOT work with require() in a CommonJS project. To use them, either: (1) Use dynamic import: const pkg = await import("pkg-name"); in your code, OR (2) Set "type": "module" in package.json and use import statements, OR (3) Install older CJS-compatible versions by specifying a version number, e.g.: npm install ${esmOnlyPackages[0]}@8.2.6 (replace with the actual version you want).`;
+            }
+          }
+
+          // Combine messages and return if there are any issues
+          if (invalidPackages.length > 0 || esmOnlyPackages.length > 0) {
+            let combinedMsg = [errorMsg, esmMsg].filter(Boolean).join('\n\n');
+
+            // If there are valid packages too, tell the LLM it can install them separately
+            if (validPackages.length > 0) {
+              const validList = validPackages.map(p => `"${p}"`).join(', ');
+              combinedMsg += `\n\nThe following packages ARE valid and can be installed: ${validList}. To install just the valid packages, run: npm install ${validPackages.join(' ')}`;
+            }
+
+            return {
+              success: false,
+              error: combinedMsg,
+              data: { exitCode: null, stdout: '', stderr: '' },
+            };
           }
         }
 
@@ -394,6 +553,44 @@ export class ToolEngine {
             error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`node app.js\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`node app.js\` and mention the directory separately.`,
             data: { exitCode: null, stdout: '', stderr: '' },
           };
+        }
+
+        // Pre-execution check: detect animated CLI apps (games, real-time displays, etc.)
+        // that use setTimeout/setInterval loops and will never complete on their own.
+        // These apps will always time out after 5s, wasting time and confusing the LLM.
+        // Instead of running them, block immediately and tell the LLM to instruct the user.
+        const runFileMatch = command.trim().match(/^(node|python3?|deno|bun)\s+(\S+\.\w+)\s*$/i);
+        if (runFileMatch) {
+          const runner = runFileMatch[1]; // node, python, etc.
+          const scriptFile = runFileMatch[2]; // app.js, main.py, etc.
+          const scriptPath = join(workingDir, scriptFile);
+
+          if (existsSync(scriptPath)) {
+            const scriptContent = readFileSync(scriptPath, 'utf-8');
+
+            // Patterns that indicate an animated/long-running CLI app:
+            // - setTimeout/setInterval with a short interval (animation loop)
+            // - requestAnimationFrame (browser-style animation)
+            // - Common game loop patterns
+            const animationPatterns = [
+              /setTimeout\s*\([^,]+,\s*\d{1,4}\s*\)/,  // setTimeout(fn, <10000ms) — short timer
+              /setInterval\s*\([^,]+,\s*\d{1,4}\s*\)/,  // setInterval(fn, <10000ms) — recurring timer
+              /requestAnimationFrame\s*\(/,               // requestAnimationFrame
+              /setTimeout\s*\(\s*\w+\s*,\s*\d{1,4}\s*\)/, // setTimeout(funcName, <10000ms)
+              /setInterval\s*\(\s*\w+\s*,\s*\d{1,4}\s*\)/, // setInterval(funcName, <10000ms)
+            ];
+
+            const hasAnimation = animationPatterns.some(p => p.test(scriptContent));
+            if (hasAnimation) {
+              const appDir = this._currentApp || cwd || 'app-name';
+              const strippedCommand = command.replace(/^(node|python3?|deno|bun)\s+\S+\/(\S+\.\w+)\s*$/i, '$1 $2');
+              return {
+                success: false,
+                error: `The file "${scriptFile}" contains animation loops (setTimeout/setInterval) and will run indefinitely. This command cannot complete in this environment. Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${appDir} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
+                data: { exitCode: null, stdout: '', stderr: '' },
+              };
+            }
+          }
         }
 
         // For generic run commands (node app.js, python app.py, etc.), use a shorter
@@ -421,9 +618,25 @@ export class ToolEngine {
             const needsAppDir = /^npm\s+(init|install|run|start|test)/.test(command.trim());
             if (needsAppDir) {
               const appNames = apps.map(a => `"${a.name}"`).join(', ');
+
+              // Suggest the most recently modified app (by mtime), not the first alphabetically.
+              // The LLM is most likely working on the app it just created/modified.
+              let suggestedApp = apps[0].name;
+              let latestMtime = 0;
+              for (const app of apps) {
+                const appPath = join(this.workspaceDir, app.name);
+                try {
+                  const stat = statSync(appPath);
+                  if (stat.mtimeMs > latestMtime) {
+                    latestMtime = stat.mtimeMs;
+                    suggestedApp = app.name;
+                  }
+                } catch {}
+              }
+
               return {
                 success: false,
-                error: `Command "${command}" is running in the workdir root, but it should run inside an app directory. Available apps: ${appNames}. Use the cwd parameter, e.g.: execute_command({"command":"${command}","cwd":"${apps[0].name}"})`,
+                error: `Command "${command}" is running in the workdir root, but it should run inside an app directory. Available apps: ${appNames}. Use the cwd parameter, e.g.: execute_command({"command":"${command}","cwd":"${suggestedApp}"})`,
               };
             }
           }
@@ -460,16 +673,70 @@ export class ToolEngine {
             const output = stdout.trim() || stderr.trim() || '(process started, still running)';
             resolved = true;
 
-            // For run commands that timed out, treat as a server and tell the LLM
-            // to output instructions instead.
+            // For run commands that timed out, determine if the issue is a missing cwd parameter
+            // or a genuinely long-running process (animated CLI, server, etc.).
             if (isRunCommand) {
+              // Check if the auto-cwd feature already resolved the directory.
+              // If !cwd (no cwd was provided) AND this._currentApp is set, the command ran
+              // inside the current app directory — so it's a long-running process, not a cwd issue.
+              const autoCwdResolved = !cwd && this._currentApp;
+
+              if (!autoCwdResolved && !cwd) {
+                // No cwd was provided AND no auto-cwd context — check if the file exists
+                // in an app subdirectory and suggest using cwd.
+                const fileRefMatch = command.match(/(?:node|python3?|deno|bun)\s+(\S+\.\w+)/);
+                if (fileRefMatch) {
+                  const referencedFile = fileRefMatch[1];
+                  const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
+                    .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+                  for (const app of apps) {
+                    const appFilePath = join(this.workspaceDir, app.name, referencedFile);
+                    if (existsSync(appFilePath)) {
+                      resolve({
+                        success: false,
+                        error: `The command "${command}" timed out after 5s because it ran in the workdir root instead of inside the app directory.\n\n💡 Hint: The file "${referencedFile}" exists in the "${app.name}/" directory. You likely forgot to set cwd="${app.name}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${app.name}"})`,
+                        data: { exitCode: null, timedOut: true, stdout, stderr },
+                      });
+                      return;
+                    }
+                  }
+                }
+              }
+
+              // Either auto-cwd resolved the directory, or the file wasn't found in any app.
+              // Determine if this is an interactive CLI (waiting for stdin input) vs a
+              // long-running process (animated CLI, server, etc.).
+              // Interactive CLIs show a prompt/question in their output before timing out.
+              const appDir = this._currentApp || cwd || 'app-name';
               // Strip any directory prefix from the command for the user-facing suggestion.
               const strippedCommand = command.replace(/^(node|python3?|deno|bun)\s+\S+\/(\S+\.\w+)\s*$/i, '$1 $2');
-              resolve({
-                success: false,
-                error: `The command "${command}" appears to start a long-running server process (timed out after 5s). Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${cwd ? cwd : 'app-name'} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
-                data: { exitCode: null, timedOut: true, stdout, stderr, background: true },
-              });
+  
+              // Check if the output contains a question/prompt — indicates an interactive CLI
+              // that's waiting for user input (e.g., readline-sync, inquirer prompts).
+              const hasPrompt = /[?？:：]\s*$|(?:Enter|What|Which|Choose|Select|Type|Pick)\s/i.test(stdout.trim());
+  
+              if (hasPrompt) {
+                // Interactive CLI — the app is waiting for user input, not a server.
+                // Tell the LLM to instruct the user to run it interactively.
+                // Do NOT include stdout/stderr in data — the LLM should respond to the
+                // error message (telling the user to run it manually), not to the partial
+                // output content (e.g., ASCII art, prompts).
+                resolve({
+                  success: false,
+                  error: `The command "${command}" is an interactive CLI that requires user input (timed out after 5s waiting for input). Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${appDir} directory and interact with the prompts." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
+                  data: { exitCode: null, timedOut: true, background: true },
+                });
+              } else {
+                // Non-interactive long-running process (animated CLI, server, etc.)
+                // Do NOT include stdout/stderr in data — the LLM should respond to the
+                // error message (telling the user to run it manually), not to the partial
+                // output content (e.g., ASCII art from animated CLIs).
+                resolve({
+                  success: false,
+                  error: `The command "${command}" appears to start a long-running process (timed out after 5s). Instead of running it, tell the user the exact command to run in their terminal. For example: "Run \`${strippedCommand}\` from the ${appDir} directory to start the app." Do NOT prefix the file path with the directory name — just say \`${strippedCommand}\` and mention the directory separately.`,
+                  data: { exitCode: null, timedOut: true, background: true },
+                });
+              }
             } else {
               resolve({
                 success: true,
@@ -498,6 +765,23 @@ export class ToolEngine {
                 } else {
                   const pkgCount = readdirSync(nodeModulesPath).length;
                   verificationNote = `\n\n✅ node_modules/ created with ${pkgCount} packages.`;
+                }
+              }
+
+              // After npm init -y, auto-set "type": "module" in package.json for ESM-by-default.
+              // Modern Node.js apps should use ES modules (import/export) rather than CommonJS (require()).
+              // npm init -y may set "type": "commonjs" by default in newer npm versions, so we
+              // always override it to "module" regardless of what was set.
+              const isNpmInit = /^npm\s+init\s+-y/.test(command.trim());
+              if (isNpmInit) {
+                const pkgJsonPath = join(workingDir, 'package.json');
+                if (existsSync(pkgJsonPath)) {
+                  try {
+                    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+                    pkg.type = 'module';
+                    writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2) + '\n', 'utf-8');
+                    verificationNote += '\n\n✅ Set "type": "module" in package.json for ES module support. Use import/export syntax instead of require().';
+                  } catch {}
                 }
               }
 
@@ -580,6 +864,11 @@ export class ToolEngine {
         }
 
         this._ensureDir(fullPath);
+
+        // Track this as the current working app for auto-cwd in execute_command
+        if (isTopLevel) {
+          this._currentApp = path;
+        }
 
         // Auto-init git ONLY for top-level app directories (direct children of workdir).
         // Subdirectories within an app (e.g., my-app/src/) must NOT get their own git repo.

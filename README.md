@@ -9,6 +9,8 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 - **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
 - **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals (backtick strings), trailing commas, and single quotes.
 - **12 built-in tools** — Filesystem operations, web search, URL content extraction, current time, and shell command execution.
+- **ESM-by-default** — All new Node.js apps automatically get `"type": "module"` in `package.json` after `npm init -y`, so the LLM uses `import`/`export` syntax instead of `require()`.
+- **Prevents "talks instead of doing"** — The system prompt explicitly forbids the LLM from stopping after `npm install` to provide example code. It must always create the actual source files with `write_file()` and tell the user the command to run.
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
 - **Web-aware** — Search the web via DuckDuckGo (no API key needed), fetch and extract article content from any URL, with automatic Puppeteer fallback for bot-protected sites.
 - **Loop-safe** — Detects when the LLM gets stuck in a tool-calling loop and forces a text response.
@@ -85,7 +87,7 @@ The agent will:
 6. Tell you the command to run to start the app (e.g., `node app.js` in the app directory)
 7. Print a summary and exit
 
-> **Note:** The agent builds your app and can run CLI/TUI apps (e.g., `node app.js` for a weather CLI) directly — they complete within a 5-second timeout. For long-running server processes (e.g., `npm start`, `npm run dev`), the agent tells you the exact command to run in your terminal instead of trying to run them.
+> **Note:** The agent builds your app — it creates source files, installs dependencies, and sets up the project structure. For Node.js apps, `"type": "module"` is automatically added to `package.json` so the LLM uses `import`/`export` syntax. The agent does **not** attempt to run the app; it tells you the exact command to run in your terminal instead.
 
 ### Conversational Chat Mode
 
@@ -356,6 +358,15 @@ reside/
 │   ├── search.js             # Puppeteer-based DuckDuckGo search + browser URL fetch
 │   ├── agent.js              # Main agent loop orchestrator
 │   └── workspace.js          # Workdir manager with per-app git repos
+├── test/
+│   ├── config.test.js        # Config system tests
+│   ├── fetchUrl.test.js      # URL fetching tests (local test server)
+│   ├── integration.test.js   # End-to-end LLM simulation tests
+│   ├── parser.test.js        # JSON tool call parser tests
+│   ├── tools.test.js         # Tool execution engine tests
+│   ├── workspace.test.js     # Workspace manager tests
+│   ├── test-server.js        # Local HTTP test server for fetch tests
+│   └── fixtures/             # HTML test pages for local server
 └── workdir/                  # App/project directories (each with own git)
 ```
 

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node.js 22 Released with New Features</title>
+  <meta property="og:title" content="Node.js 22 Released with New Features">
+  <meta name="description" content="Node.js 22 is now available with V8 JavaScript engine updates, improved performance, and new APIs.">
+</head>
+<body>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/blog">Blog</a>
+    <a href="/docs">Docs</a>
+    <a href="/about">About</a>
+  </nav>
+
+  <header>
+    <h1>Node.js 22 Released with New Features</h1>
+    <p class="meta">Published: March 15, 2025 by the Node.js Team</p>
+  </header>
+
+  <main>
+    <article>
+      <p>The Node.js project has released version 22.0.0, bringing significant improvements to the JavaScript runtime. This major release includes updates to the V8 JavaScript engine, new experimental APIs, and performance enhancements that developers have been eagerly anticipating.</p>
+
+      <h2>V8 Engine Update to Version 12.4</h2>
+      <p>Node.js 22 ships with V8 JavaScript engine version 12.4, which includes several performance improvements and new JavaScript language features. The updated engine provides better optimization for modern JavaScript patterns and reduces memory usage for typical applications.</p>
+      <p>Key V8 improvements include faster property access, improved garbage collection algorithms, and better support for modern JavaScript syntax. These changes result in up to 15% performance improvement for typical Node.js applications.</p>
+
+      <h2>New Experimental Features</h2>
+      <p>Several new experimental features are available in Node.js 22, giving developers early access to upcoming capabilities. The most notable additions include:</p>
+      <ul>
+        <li><strong>WebSocket client:</strong> A built-in WebSocket client implementation that follows the Web API standard, eliminating the need for third-party libraries like <code>ws</code> for basic WebSocket connections.</li>
+        <li><strong>Built-in SQLite support:</strong> An experimental SQLite module that provides a simple, zero-configuration database solution for Node.js applications. This is particularly useful for prototyping and small-scale applications.</li>
+        <li><strong>Improved test runner:</strong> The built-in test runner now supports mocking, snapshot testing, and code coverage reporting, making it a viable alternative to third-party testing frameworks.</li>
+      </ul>
+
+      <h2>Performance Improvements</h2>
+      <p>Node.js 22 includes several performance optimizations that benefit all applications. The HTTP parser has been rewritten for better throughput, and the file system operations now use asynchronous I/O more efficiently.</p>
+      <p>Benchmark results show that Node.js 22 handles up to 30% more requests per second compared to Node.js 20 for typical web server workloads. Memory usage has also been reduced by approximately 10% in common scenarios.</p>
+
+      <h2>Breaking Changes</h2>
+      <p>As with any major release, Node.js 22 includes some breaking changes that developers should be aware of when upgrading:</p>
+      <ul>
+        <li>The <code>http.Server</code> constructor now requires the <code>new</code> keyword.</li>
+        <li>Deprecated APIs from Node.js 18 have been removed, including several crypto utility functions.</li>
+        <li>The default TLS minimum version has been raised to 1.3.</li>
+      </ul>
+
+      <h2>Upgrade Guide</h2>
+      <p>To upgrade to Node.js 22, you can use your preferred version manager. For nvm users, run <code>nvm install 22</code>. For direct downloads, visit the official Node.js website at <a href="https://nodejs.org">nodejs.org</a>.</p>
+      <p>We recommend testing your applications against Node.js 22 in a staging environment before deploying to production. The Node.js team has provided a comprehensive migration guide on the official blog.</p>
+    </article>
+  </main>
+
+  <aside class="sidebar">
+    <div class="social-share">
+      <h3>Share</h3>
+      <ul>
+        <li><a href="#">Twitter</a></li>
+        <li><a href="#">Facebook</a></li>
+        <li><a href="#">LinkedIn</a></li>
+      </ul>
+    </div>
+    <div class="related-articles">
+      <h3>Related Articles</h3>
+      <ul>
+        <li><a href="#">Node.js 20 Release Notes</a></li>
+        <li><a href="#">Node.js 18 Release Notes</a></li>
+        <li><a href="#">Migrating to Node.js 22</a></li>
+      </ul>
+    </div>
+  </aside>
+
+  <footer>
+    <p>&copy; 2025 Node.js Foundation. All rights reserved.</p>
+    <p>Privacy Policy | Terms of Service | Cookie Policy</p>
+  </footer>
+</body>
+</html>

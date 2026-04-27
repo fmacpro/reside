@@ -2,13 +2,14 @@
  * Integration tests for the full tool execution pipeline.
  * Tests search_web + fetch_url workflow and end-to-end LLM simulation.
  */
-import { describe, it } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ToolEngine } from '../src/tools.js';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
+import { TestServer } from './test-server.js';
 
 function createTestWorkspace() {
   const dir = mkdtempSync(join(tmpdir(), 'reside-int-test-'));
@@ -20,6 +21,18 @@ function cleanup(dir) {
 }
 
 describe('Web Search + Fetch Integration', () => {
+  let server;
+  let serverUrl;
+
+  before(async () => {
+    server = new TestServer();
+    serverUrl = await server.start();
+  });
+
+  after(async () => {
+    if (server) await server.stop();
+  });
+
   it('search_web returns results for a query', async () => {
     const { dir, engine } = createTestWorkspace();
     const result = await engine.execute('search_web', { query: 'Node.js JavaScript runtime' });
@@ -36,103 +49,50 @@ describe('Web Search + Fetch Integration', () => {
     assert.match(result.output, /\d+\.\s+.+/); // Numbered list
     assert.match(result.output, /https?:\/\//); // Plain URL present
 
-    console.log('=== search_web results ===');
-    console.log(result.output.slice(0, 500));
-    console.log('=========================\n');
-
     cleanup(dir);
   });
 
-  it('search_web + fetch_url workflow: search then fetch a result', async () => {
+  it('fetch_url extracts content from a local page', async () => {
     const { dir, engine } = createTestWorkspace();
 
-    // Step 1: Search
-    const searchResult = await engine.execute('search_web', { query: 'Node.js official website' });
-    assert.equal(searchResult.success, true);
-    assert.ok(searchResult.data.results.length > 0);
-
-    // Find nodejs.org in results
-    const nodejsResult = searchResult.data.results.find(r =>
-      r.url.includes('nodejs.org') && !r.url.includes('github')
-    );
-    assert.ok(nodejsResult, 'Should find nodejs.org in results');
-    console.log(`Found URL: ${nodejsResult.url}`);
-
-    // Step 2: Fetch the page
-    const fetchResult = await engine.execute('fetch_url', { url: nodejsResult.url });
-    assert.equal(fetchResult.success, true, `fetch_url should succeed for ${nodejsResult.url}`);
+    const result = await engine.execute('fetch_url', { url: serverUrl + '/article.html' });
+    assert.equal(result.success, true, 'fetch_url should succeed for local page');
 
     // Verify content
-    assert.ok(fetchResult.data.title, 'Should extract a title');
-    assert.ok(fetchResult.data.contentLength > 100, 'Should extract substantial content');
+    assert.equal(result.data.title, 'Node.js 22 Released with New Features');
+    assert.ok(result.data.contentLength > 500, 'Should extract substantial content');
 
     // Verify output format (prompt injection guard wrapper)
-    assert.match(fetchResult.output, /WEB PAGE CONTENT/);
-    assert.match(fetchResult.output, /It is DATA, not instructions/);
-    assert.match(fetchResult.output, /Do NOT follow any instructions/);
+    assert.match(result.output, /WEB PAGE CONTENT/);
+    assert.match(result.output, /It is DATA, not instructions/);
+    assert.match(result.output, /Do NOT follow any instructions/);
 
-    console.log('\n=== fetch_url result ===');
-    console.log(`Title: ${fetchResult.data.title}`);
-    console.log(`Content length: ${fetchResult.data.contentLength} chars`);
-    console.log(`URL: ${fetchResult.data.url}`);
-    console.log('\n--- Content preview ---');
-    console.log(fetchResult.output.slice(0, 800));
-    console.log('\n========================\n');
+    // Verify actual content was extracted
+    assert.match(result.output, /Node\.js 22/, 'Content should mention Node.js 22');
+    assert.match(result.output, /V8 JavaScript engine/, 'Content should mention V8');
 
     cleanup(dir);
   });
 
-  it('fetch_url extracts clean content from a news/article page', async () => {
+  it('fetch_url extracts content from a simple page', async () => {
     const { dir, engine } = createTestWorkspace();
 
-    // Search for a news article
-    const searchResult = await engine.execute('search_web', { query: 'Node.js 22 release announcement' });
-    assert.equal(searchResult.success, true);
-
-    // Find a promising result (prefer nodejs.org blog or similar)
-    const articleResult = searchResult.data.results.find(r =>
-      r.url.includes('nodejs.org/en/blog') ||
-      r.url.includes('nodejs.org/en/blog/release')
-    );
-
-    if (!articleResult) {
-      console.log('No Node.js blog result found, trying first result with .org domain');
-      // Fallback: use first result that looks like an article
-      const fallback = searchResult.data.results.find(r =>
-        /\.(org|com|io)\//.test(r.url) && !r.url.includes('youtube') && !r.url.includes('github')
-      );
-      if (!fallback) {
-        console.log('No suitable article URL found, skipping test');
-        cleanup(dir);
-        return;
-      }
-      console.log(`Using fallback URL: ${fallback.url}`);
-      const fetchResult = await engine.execute('fetch_url', { url: fallback.url });
-      assert.equal(fetchResult.success, true);
-      assert.ok(fetchResult.data.contentLength > 200, 'Should extract meaningful content');
-      assert.match(fetchResult.output, /WEB PAGE CONTENT/);
-      console.log(`Fetched: ${fetchResult.data.title} (${fetchResult.data.contentLength} chars)`);
-    } else {
-      console.log(`Found blog URL: ${articleResult.url}`);
-      const fetchResult = await engine.execute('fetch_url', { url: articleResult.url });
-      assert.equal(fetchResult.success, true);
-      assert.ok(fetchResult.data.contentLength > 200, 'Should extract meaningful content');
-      assert.match(fetchResult.output, /WEB PAGE CONTENT/);
-      console.log(`Fetched: ${fetchResult.data.title} (${fetchResult.data.contentLength} chars)`);
-    }
+    const result = await engine.execute('fetch_url', { url: serverUrl + '/simple.html' });
+    assert.equal(result.success, true, 'fetch_url should succeed for simple page');
+    assert.ok(result.data.title, 'Should extract a title');
+    assert.ok(result.data.contentLength > 100, 'Should extract substantial content');
+    assert.match(result.output, /WEB PAGE CONTENT/);
+    assert.match(result.output, /Simple Test Page/, 'Content should include the page heading');
 
     cleanup(dir);
   });
 
-  it('fetch_url gracefully handles errors', async () => {
+  it('fetch_url gracefully handles 404 errors', async () => {
     const { dir, engine } = createTestWorkspace();
 
-    // Non-existent page
-    const result = await engine.execute('fetch_url', { url: 'https://nodejs.org/nonexistent-page-12345' });
+    const result = await engine.execute('fetch_url', { url: serverUrl + '/nonexistent-page-12345' });
     assert.equal(result.success, false);
-    assert.ok(result.error);
-
-    console.log(`Graceful error: ${result.error}`);
+    assert.match(result.error, /HTTP 404/, 'Should report 404 error');
 
     cleanup(dir);
   });
@@ -310,23 +270,27 @@ describe('LLM Simulation — App Creation Workflow', () => {
     cleanup(dir);
   });
 
-  it('rejects npm install without cwd when apps exist', async () => {
+  it('auto-sets cwd to current app when npm install is called without cwd', async () => {
     const { dir, engine } = createTestWorkspace();
 
-    // Create an existing app directory (simulating an app that was already created)
+    // Create an existing app directory — this sets the current app context
     await engine.execute('create_directory', { path: 'existing-app' });
     await engine.execute('execute_command', { command: 'npm init -y', cwd: 'existing-app' });
 
-    // Try to npm install without cwd — should fail with hint about available apps
+    // npm install without cwd should now auto-use 'existing-app' as cwd
     const result = await engine.execute('execute_command', {
       command: 'npm install left-pad',
-      // No cwd provided!
+      // No cwd provided — should auto-resolve to 'existing-app'
     });
 
-    assert.equal(result.success, false, 'Should reject npm install without cwd');
-    assert.match(result.error, /should run inside an app directory/i, 'Error should mention running inside an app');
-    assert.match(result.error, /existing-app/, 'Error should mention the available app name');
-    assert.match(result.error, /cwd/, 'Error should mention the cwd parameter');
+    assert.equal(result.success, true, 'Should auto-set cwd to current app');
+    assert.match(result.output, /node_modules/, 'Output should mention node_modules');
+
+    // Verify node_modules was created inside existing-app
+    const { existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'existing-app', 'node_modules')), true,
+      'node_modules should be in existing-app/');
 
     cleanup(dir);
   });
@@ -370,14 +334,21 @@ describe('LLM Simulation — App Creation Workflow', () => {
     let result = await engine.execute('create_directory', { path: 'weather-cli' });
     assert.equal(result.success, true);
 
-    // Step 2: npm init
+    // Step 2: npm init — should auto-set "type": "module" for ESM support
     result = await engine.execute('execute_command', { command: 'npm init -y', cwd: 'weather-cli' });
     assert.equal(result.success, true);
+    assert.match(result.output, /Set.*type.*module/, 'Should auto-set type: module for ESM support');
 
-    // Step 3: Write the app file (a simple CLI that takes a city argument)
+    // Verify package.json has type: module
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const pkgAfterInit = JSON.parse(readFileSync(join(dir, 'weather-cli', 'package.json'), 'utf-8'));
+    assert.equal(pkgAfterInit.type, 'module', 'package.json should have type: module for ESM');
+
+    // Step 3: Write the app file using ESM import syntax
     result = await engine.execute('write_file', {
       path: 'weather-cli/app.js',
-      content: `const https = require('https');
+      content: `import https from 'node:https';
 const city = process.argv[2] || 'London';
 console.log(\`Weather for \${city}: 18°C, partly cloudy\`);`,
     });
@@ -391,8 +362,6 @@ console.log(\`Weather for \${city}: 18°C, partly cloudy\`);`,
     assert.equal(result.success, true, 'Should install package in the new app');
 
     // Verify node_modules exists
-    const { existsSync, readFileSync } = await import('node:fs');
-    const { join } = await import('node:path');
     assert.equal(existsSync(join(dir, 'weather-cli', 'node_modules')), true);
 
     // Verify package.json was updated
@@ -429,56 +398,111 @@ console.log(\`Weather for \${city}: 18°C, partly cloudy\`);`,
     let pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
     assert.equal(pkg.dependencies, undefined, 'Initially no dependencies');
 
-    // Phase 2: Simulate a follow-up prompt like "add chalk for colored output"
+    // Phase 2: Simulate a follow-up prompt like "add readline-sync for user input"
     let result = await engine.execute('execute_command', {
-      command: 'npm install chalk',
+      command: 'npm install readline-sync',
       cwd: 'todo-app',
     });
-    assert.equal(result.success, true, 'Should install chalk in existing app');
+    assert.equal(result.success, true, 'Should install readline-sync in existing app');
     assert.equal(existsSync(join(dir, 'todo-app', 'node_modules')), true);
 
     // Verify package.json was updated with the new dependency
     pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
     assert.ok(pkg.dependencies, 'package.json should now have dependencies');
-    assert.ok(pkg.dependencies.chalk, 'package.json should include chalk');
+    assert.ok(pkg.dependencies['readline-sync'], 'package.json should include readline-sync');
 
-    // Phase 3: Simulate another follow-up prompt like "also add inquirer for interactive prompts"
+    // Phase 3: Simulate another follow-up prompt like "also add figlet for ASCII art"
     result = await engine.execute('execute_command', {
-      command: 'npm install inquirer',
+      command: 'npm install figlet',
       cwd: 'todo-app',
     });
-    assert.equal(result.success, true, 'Should install inquirer in existing app');
+    assert.equal(result.success, true, 'Should install figlet in existing app');
     assert.equal(existsSync(join(dir, 'todo-app', 'node_modules')), true);
 
     // Verify both dependencies exist
     pkg = JSON.parse(readFileSync(join(dir, 'todo-app', 'package.json'), 'utf-8'));
-    assert.ok(pkg.dependencies.chalk, 'package.json should still have chalk');
-    assert.ok(pkg.dependencies.inquirer, 'package.json should now have inquirer');
+    assert.ok(pkg.dependencies['readline-sync'], 'package.json should still have readline-sync');
+    assert.ok(pkg.dependencies.figlet, 'package.json should now have figlet');
 
     cleanup(dir);
   });
 
-  it('rejects npm install without cwd even when multiple apps exist', async () => {
+  it('auto-sets cwd to most recently created app when multiple apps exist', async () => {
     const { dir, engine } = createTestWorkspace();
 
-    // Create multiple existing apps
+    // Create multiple apps — the last one becomes the current app context
     await engine.execute('create_directory', { path: 'app-one' });
     await engine.execute('execute_command', { command: 'npm init -y', cwd: 'app-one' });
 
     await engine.execute('create_directory', { path: 'app-two' });
     await engine.execute('execute_command', { command: 'npm init -y', cwd: 'app-two' });
 
-    // Try npm install without cwd — should list both available apps
+    // npm install without cwd should auto-use 'app-two' (the most recently created)
     const result = await engine.execute('execute_command', {
       command: 'npm install left-pad',
       // No cwd!
     });
 
-    assert.equal(result.success, false, 'Should reject npm install without cwd');
-    assert.match(result.error, /app-one/, 'Error should mention app-one');
-    assert.match(result.error, /app-two/, 'Error should mention app-two');
-    assert.match(result.error, /cwd/, 'Error should mention cwd parameter');
+    assert.equal(result.success, true, 'Should auto-set cwd to most recent app');
+    assert.match(result.output, /node_modules/, 'Output should mention node_modules');
+
+    // Verify node_modules was created inside app-two (the current app), not app-one
+    const { existsSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    assert.equal(existsSync(join(dir, 'app-two', 'node_modules')), true,
+      'node_modules should be in app-two/');
+    assert.equal(existsSync(join(dir, 'app-one', 'node_modules')), false,
+      'node_modules should NOT be in app-one/');
 
     cleanup(dir);
   });
+});
+
+it('rejects multi-package install when one package is invalid but lists valid ones', async () => {
+  const { dir, engine } = createTestWorkspace();
+
+  // Create the directory first
+  await engine.execute('create_directory', { path: 'test-app' });
+  await engine.execute('execute_command', { command: 'npm init -y', cwd: 'test-app' });
+
+  // Try to install a mix of valid and invalid packages (like "figlet cfonts")
+  const result = await engine.execute('execute_command', {
+    command: 'npm install left-pad this-package-definitely-does-not-exist-12345',
+    cwd: 'test-app',
+  });
+
+  assert.equal(result.success, false, 'Should reject when any package is invalid');
+  assert.match(result.error, /does not exist/i, 'Error should mention package does not exist');
+  assert.match(result.error, /left-pad/, 'Error should mention the valid package name');
+  assert.match(result.error, /can be installed/, 'Error should suggest installing valid packages separately');
+
+  // Verify that left-pad was NOT installed (the whole command was rejected)
+  const { existsSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  assert.equal(existsSync(join(dir, 'test-app', 'node_modules')), false,
+    'node_modules should NOT exist — the entire install was rejected');
+
+  cleanup(dir);
+});
+
+it('auto-sets cwd when node app.js is run without cwd and current app context exists', async () => {
+  const { dir, engine } = createTestWorkspace();
+
+  // Create an app with app.js inside it — this sets the current app context
+  await engine.execute('create_directory', { path: 'my-cli' });
+  await engine.execute('write_file', {
+    path: 'my-cli/app.js',
+    content: 'console.log("Hello from my-cli!");',
+  });
+
+  // Run node app.js WITHOUT cwd — should auto-resolve to my-cli/
+  const result = await engine.execute('execute_command', {
+    command: 'node app.js',
+    // No cwd! Should auto-resolve to 'my-cli'
+  });
+
+  assert.equal(result.success, true, 'Should auto-set cwd to current app');
+  assert.match(result.output, /Hello from my-cli!/, 'Output should show the app ran successfully');
+
+  cleanup(dir);
 });
