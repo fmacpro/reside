@@ -302,13 +302,13 @@ export async function searchWeb(query, options = {}) {
       }
     }
 
-    // Build output with actual article content and plain-text URL
+    // Build output with actual article content and plain URL
     const output = followedResults
       .map((r, i) => {
         const lines = [
           `${i + 1}. ${r.articleTitle}`,
           `   ${r.summary}`,
-          `   URL: ${r.url}`,
+          `   ${r.url}`,
         ];
         return lines.join('\n');
       })
