@@ -350,6 +350,37 @@ describe('ToolEngine', () => {
     });
   });
 
+  describe('fetch_url', () => {
+    it('fails for missing url argument', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('fetch_url', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('fails for empty url', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('fetch_url', { url: '' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('returns fetch_url in tool names', () => {
+      const engine = new ToolEngine('/tmp');
+      const names = engine.getToolNames();
+      assert.ok(names.includes('fetch_url'));
+    });
+
+    it('includes fetch_url in tool descriptions', () => {
+      const engine = new ToolEngine('/tmp');
+      const desc = engine.getToolDescriptions();
+      assert.match(desc, /fetch_url/);
+      assert.match(desc, /Fetch a URL/);
+    });
+  });
+
   describe('unknown tool', () => {
     it('returns error for unknown tool', async () => {
       const { dir, engine } = createTestWorkspace();
@@ -373,8 +404,9 @@ describe('ToolEngine', () => {
       assert.ok(names.includes('execute_command'));
       assert.ok(names.includes('delete_file'));
       assert.ok(names.includes('search_web'));
+      assert.ok(names.includes('fetch_url'));
       assert.ok(names.includes('finish'));
-      assert.equal(names.length, 10);
+      assert.equal(names.length, 11);
     });
   });
 

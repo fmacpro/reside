@@ -170,6 +170,7 @@ The LLM has access to these tools:
 | `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
 | `delete_file(path)`                       | Delete a file or directory                                                                               |
 | `search_web(query)`                     | Search the web for information (DuckDuckGo Lite, no API key needed)                          |
+| `fetch_url(url)`                        | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)              |
 | `finish(message)`                       | Signal that a task is complete                                                               |
 
 ### Web Search
@@ -193,6 +194,49 @@ The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/
 ```
 
 The tool is implemented with zero dependencies — it uses Node.js built-in `https` module for the HTTP request and regex-based HTML parsing.
+
+### Web Search + Fetch Workflow
+
+The `search_web` and `fetch_url` tools work together to give the LLM access to current web content:
+
+1. **Search** — `search_web("query")` returns a list of results with titles, snippets, and URLs
+2. **Fetch** — `fetch_url("https://...")` retrieves the full article content from a specific URL
+
+**Example workflow:**
+```
+💬 > What's the latest news about Node.js?
+
+🤖 Let me search for that...
+
+🔧 search_web({"query":"Node.js latest news 2026"})
+   ✅ 1. Node.js 24 Released with New Features
+      Node.js 24 brings significant performance improvements...
+      https://nodejs.org/en/blog/release/v24
+
+🔧 fetch_url({"url":"https://nodejs.org/en/blog/release/v24"})
+   ✅ # Node.js 24 Released
+      We are excited to announce the release of Node.js 24...
+      This version includes V8 12.4, better ESM support...
+
+🤖 Node.js 24 has been released with V8 12.4, better ESM support...
+```
+
+### Fetch URL
+
+The `fetch_url(url)` tool fetches a web page and extracts its main article content using a heuristic content detection algorithm adapted from [horseman-article-parser](https://github.com/fmacpro/horseman-article-parser). It:
+
+- **Strips boilerplate** — Removes navigation, headers, footers, sidebars, ads, cookie notices, and other non-content elements
+- **Detects the main content** — Uses a scoring system that evaluates text density, paragraph structure, link density, and semantic HTML elements (`<article>`, `<main>`, `[role="main"]`)
+- **Preserves structure** — Outputs clean text with headings, lists, blockquotes, and code blocks formatted for readability
+- **Zero dependencies** — Uses only Node.js built-in `http`/`https` modules and a lightweight custom HTML parser
+
+**How it works internally:**
+1. Fetches the page HTML via HTTPS with a browser-like User-Agent
+2. Parses the HTML into a lightweight DOM tree (no JSDOM needed)
+3. Gathers candidate content containers using positive selectors (`<article>`, `<main>`, content class patterns)
+4. Scores each candidate using heuristic features (text length, paragraph count, link density, semantic tags)
+5. Strips negative containers (nav, footer, aside, script, style, comment sections)
+6. Returns the best candidate as clean formatted text
 
 ## Workdir & Git
 
@@ -241,7 +285,8 @@ reside/
 │   ├── config.js             # Configuration system (file + env vars)
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
 │   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
-│   ├── tools.js              # Tool execution engine (10 tools: filesystem + web search)
+│   ├── tools.js              # Tool execution engine (11 tools: filesystem + web search + fetch)
+│   ├── fetchUrl.js            # URL fetching and article content extraction (zero deps)
 │   ├── agent.js              # Main agent loop orchestrator
 │   └── workspace.js          # Workdir manager with per-app git repos
 └── workdir/                  # App/project directories (each with own git)

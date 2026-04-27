@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSy
 import { resolve, relative, sep, join } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
 import { request as httpsRequest } from 'node:https';
+import { fetchAndExtract } from './fetchUrl.js';
 
 /**
  * @typedef {Object} ToolResult
@@ -121,6 +122,10 @@ export class ToolEngine {
       search_web: {
         desc: 'Search the web for information. Returns a list of results with titles, snippets, and URLs. Use this when you need current information, documentation, or answers not in your training data.',
         params: ['query'],
+      },
+      fetch_url: {
+        desc: 'Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web.',
+        params: ['url'],
       },
       finish: {
         desc: 'Call this when the task is complete',
@@ -446,6 +451,26 @@ export class ToolEngine {
 
           req.end();
         });
+      },
+
+      fetch_url: async ({ url }) => {
+        if (!url) return { success: false, error: 'Missing required argument: url' };
+
+        const result = await fetchAndExtract(url);
+
+        if (!result.success) {
+          return { success: false, error: result.error, data: { url: result.url } };
+        }
+
+        const output = result.title
+          ? `# ${result.title}\n\n${result.content}`
+          : result.content;
+
+        return {
+          success: true,
+          output,
+          data: { title: result.title, url: result.url, contentLength: result.content.length },
+        };
       },
 
       finish: async ({ message = 'Task completed' }) => {

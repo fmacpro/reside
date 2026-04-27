@@ -34,6 +34,7 @@ Available tools:
 - create_directory(path) - Create a directory (and parents if needed)
 - execute_command(command, cwd?) - Run a shell command. Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts a fresh shell — cd does NOT persist between calls.
 - search_web(query) - Search the web for information. Returns a list of results with titles, snippets, and URLs. Use this when you need current information, documentation, or answers not in your training data.
+- fetch_url(url) - Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web.
 - delete_file(path) - Delete a file or directory
 - finish(message) - Signal that a task is complete
 
