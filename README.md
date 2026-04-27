@@ -45,7 +45,7 @@ node src/index.js "Create a simple HTML page with a blue button"
 node src/index.js --chat
 
 # Use a specific model
-node src/index.js --model qwen3.5:latest "Build a React counter component"
+node src/index.js --chat --model qwen3.5:latest
 ```
 
 ## Usage
@@ -59,6 +59,7 @@ node src/index.js "Create a simple Express.js API server with a /hello endpoint"
 ```
 
 The agent will:
+
 1. Create app directories under `workdirs/`
 2. Initialize a git repository in each new app directory
 3. Process your task through the LLM
@@ -78,15 +79,15 @@ This opens a REPL prompt where you can type messages, ask follow-up questions, a
 
 **Chat commands:**
 
-| Command | Description |
-|---------|-------------|
-| `/exit` or `/quit` | End the session and quit |
-| `/sum` or `/summary` | Show session summary |
-| `/git` or `/log` | Show git commit log for all apps |
-| `/apps` | List apps in the workdir |
-| `/clear` | Clear conversation history (keeps system prompt) |
-| `/model` | Show the current model |
-| `/help` | Show available commands |
+| Command              | Description                                      |
+| -------------------- | ------------------------------------------------ |
+| `/exit` or `/quit`   | End the session and quit                         |
+| `/sum` or `/summary` | Show session summary                             |
+| `/git` or `/log`     | Show git commit log for all apps                 |
+| `/apps`              | List apps in the workdir                         |
+| `/clear`             | Clear conversation history (keeps system prompt) |
+| `/model`             | Show the current model                           |
+| `/help`              | Show available commands                          |
 
 Example chat session:
 
@@ -148,27 +149,50 @@ node src/index.js --set workdir /path/to/projects
 
 Configuration is stored in `~/.config/reside/config.json`. You can also use environment variables:
 
-| Variable | Description |
-|----------|-------------|
-| `RESIDE_MODEL` | Default model name |
-| `RESIDE_WORKDIR` | Base workdir directory |
+| Variable             | Description                                         |
+| -------------------- | --------------------------------------------------- |
+| `RESIDE_MODEL`       | Default model name                                  |
+| `RESIDE_WORKDIR`     | Base workdir directory                              |
 | `RESIDE_OLLAMA_HOST` | Ollama API host (default: `http://localhost:11434`) |
 
 ## Available Tools
 
 The LLM has access to these tools:
 
-| Tool | Description |
-|------|-------------|
-| `read_file(path)` | Read the contents of a file |
-| `write_file(path, content)` | Create a NEW file with content (creates directories if needed) |
-| `edit_file(path, old_string, new_string)` | Edit an EXISTING file by replacing text (use `write_file` for new files) |
-| `list_files(path)` | List files and directories in a path |
-| `search_files(path, regex, file_pattern)` | Search for patterns in files using regex |
-| `create_directory(path)` | Create a directory (and parents if needed); auto-initializes git for top-level app dirs |
-| `execute_command(command, cwd?)` | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
-| `delete_file(path)` | Delete a file or directory |
-| `finish(message)` | Signal that a task is complete |
+| Tool                                      | Description                                                                                              |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `read_file(path)`                         | Read the contents of a file                                                                              |
+| `write_file(path, content)`               | Create a NEW file with content (creates directories if needed)                                           |
+| `edit_file(path, old_string, new_string)` | Edit an EXISTING file by replacing text (use `write_file` for new files)                                 |
+| `list_files(path)`                        | List files and directories in a path                                                                     |
+| `search_files(path, regex, file_pattern)` | Search for patterns in files using regex                                                                 |
+| `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
+| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
+| `delete_file(path)`                       | Delete a file or directory                                                                               |
+| `search_web(query)`                     | Search the web for information (DuckDuckGo Lite, no API key needed)                          |
+| `finish(message)`                       | Signal that a task is complete                                                               |
+
+### Web Search
+
+The `search_web(query)` tool uses [DuckDuckGo Lite](https://lite.duckduckgo.com/lite/) — a free, privacy-respecting search endpoint that requires **no API key** and **no registration**. Results are parsed from the HTML response and returned as structured data (title, snippet, URL) for the LLM to use.
+
+**How the LLM uses it:**
+```
+💬 > What's the latest version of Node.js?
+
+🤖 Let me search for that...
+
+🔧 search_web({"query":"latest Node.js version 2026"})
+   ✅ 1. Node.js — Download the latest LTS version
+      https://nodejs.org/
+   2. Node.js Releases
+      Node.js 22.x is the current LTS release...
+      https://nodejs.org/en/about/releases/
+
+🤖 The latest LTS version of Node.js is 22.x...
+```
+
+The tool is implemented with zero dependencies — it uses Node.js built-in `https` module for the HTTP request and regex-based HTML parsing.
 
 ## Workdir & Git
 
@@ -217,7 +241,7 @@ reside/
 │   ├── config.js             # Configuration system (file + env vars)
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
 │   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
-│   ├── tools.js              # Tool execution engine (9 tools)
+│   ├── tools.js              # Tool execution engine (10 tools: filesystem + web search)
 │   ├── agent.js              # Main agent loop orchestrator
 │   └── workspace.js          # Workdir manager with per-app git repos
 └── workdir/                  # App/project directories (each with own git)

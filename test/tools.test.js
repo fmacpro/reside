@@ -319,6 +319,37 @@ describe('ToolEngine', () => {
     });
   });
 
+  describe('search_web', () => {
+    it('fails for missing query argument', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_web', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('fails for empty query', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_web', { query: '' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('returns search_web in tool names', () => {
+      const engine = new ToolEngine('/tmp');
+      const names = engine.getToolNames();
+      assert.ok(names.includes('search_web'));
+    });
+
+    it('includes search_web in tool descriptions', () => {
+      const engine = new ToolEngine('/tmp');
+      const desc = engine.getToolDescriptions();
+      assert.match(desc, /search_web/);
+      assert.match(desc, /Search the web/);
+    });
+  });
+
   describe('unknown tool', () => {
     it('returns error for unknown tool', async () => {
       const { dir, engine } = createTestWorkspace();
@@ -341,8 +372,9 @@ describe('ToolEngine', () => {
       assert.ok(names.includes('create_directory'));
       assert.ok(names.includes('execute_command'));
       assert.ok(names.includes('delete_file'));
+      assert.ok(names.includes('search_web'));
       assert.ok(names.includes('finish'));
-      assert.equal(names.length, 9);
+      assert.equal(names.length, 10);
     });
   });
 

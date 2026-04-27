@@ -33,6 +33,7 @@ Available tools:
 - search_files(path, regex, file_pattern) - Regex search across files
 - create_directory(path) - Create a directory (and parents if needed)
 - execute_command(command, cwd?) - Run a shell command. Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts a fresh shell — cd does NOT persist between calls.
+- search_web(query) - Search the web for information. Returns a list of results with titles, snippets, and URLs. Use this when you need current information, documentation, or answers not in your training data.
 - delete_file(path) - Delete a file or directory
 - finish(message) - Signal that a task is complete
 

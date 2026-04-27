@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync, rmSync } from 'node:fs';
 import { resolve, relative, sep, join } from 'node:path';
 import { execSync, spawn } from 'node:child_process';
+import { request as httpsRequest } from 'node:https';
 
 /**
  * @typedef {Object} ToolResult
@@ -116,6 +117,10 @@ export class ToolEngine {
       delete_file: {
         desc: 'Delete a file or directory',
         params: ['path'],
+      },
+      search_web: {
+        desc: 'Search the web for information. Returns a list of results with titles, snippets, and URLs. Use this when you need current information, documentation, or answers not in your training data.',
+        params: ['query'],
       },
       finish: {
         desc: 'Call this when the task is complete',
@@ -373,6 +378,74 @@ export class ToolEngine {
           output: `Deleted ${path}`,
           data: { path, type: stat.isDirectory() ? 'directory' : 'file' },
         };
+      },
+
+      search_web: async ({ query }) => {
+        if (!query) return { success: false, error: 'Missing required argument: query' };
+
+        const encodedQuery = encodeURIComponent(query);
+        const url = `https://lite.duckduckgo.com/lite/?q=${encodedQuery}`;
+
+        return new Promise((resolve) => {
+          const req = httpsRequest(url, { method: 'GET', timeout: 15_000 }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+              try {
+                const results = [];
+
+                // DuckDuckGo Lite returns HTML tables.
+                // Extract result links: <a class="result-link" href="...">title</a>
+                const linkRegex = /<a[^>]+class="result-link"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+                // Extract snippets: <td class="result-snippet">text</td>
+                const snippetRegex = /<td[^>]+class="result-snippet"[^>]*>([\s\S]*?)<\/td>/gi;
+
+                const links = [];
+                let m;
+                while ((m = linkRegex.exec(data)) !== null) {
+                  links.push({
+                    url: m[1].startsWith('//') ? 'https:' + m[1] : m[1],
+                    title: m[2].replace(/<[^>]+>/g, '').trim(),
+                  });
+                }
+
+                const snippets = [];
+                while ((m = snippetRegex.exec(data)) !== null) {
+                  snippets.push(m[1].replace(/<[^>]+>/g, '').trim());
+                }
+
+                for (let i = 0; i < Math.min(links.length, 8); i++) {
+                  results.push({
+                    title: links[i]?.title || '(no title)',
+                    url: links[i]?.url || '',
+                    snippet: snippets[i] || '',
+                  });
+                }
+
+                if (results.length === 0) {
+                  resolve({ success: true, output: 'No results found.', data: { results: [] } });
+                  return;
+                }
+
+                const output = results
+                  .map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet}\n   ${r.url}`)
+                  .join('\n\n');
+
+                resolve({ success: true, output, data: { results } });
+              } catch (err) {
+                resolve({ success: false, error: `Failed to parse search results: ${err.message}` });
+              }
+            });
+          });
+
+          req.on('error', (err) => resolve({ success: false, error: `Search request failed: ${err.message}` }));
+          req.on('timeout', () => {
+            req.destroy();
+            resolve({ success: false, error: 'Search request timed out' });
+          });
+
+          req.end();
+        });
       },
 
       finish: async ({ message = 'Task completed' }) => {
