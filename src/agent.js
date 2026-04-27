@@ -90,6 +90,16 @@ function _briefToolStatus(tool, output, data) {
       return `Listed ${fileCount || '?'} items`;
     }
     case 'execute_command': {
+      // If the command timed out (background process like a server), show the actual output
+      // so the operator can see the server URL or startup message.
+      if (data && data.timedOut && data.background) {
+        // Show the first few lines of output (e.g., "Server running on http://localhost:3000")
+        const lines = output.split('\n').filter(l => l.trim());
+        const relevantLines = lines.filter(l => !l.includes('⚠️ Command timed out'));
+        if (relevantLines.length > 0) {
+          return relevantLines.slice(0, 3).join(' | ');
+        }
+      }
       const lines = output.split('\n').length;
       return `Command completed (${lines} lines, ${output.length} chars)`;
     }
@@ -340,6 +350,18 @@ export class Agent {
           }
         } else {
           console.log(`   ❌ ${result.error}`);
+          // When a critical tool fails, inject guidance to prevent the LLM from
+          // blindly continuing to call more tools (e.g., trying to run a file
+          // that was never created, or installing deps in a non-existent dir).
+          const criticalTools = ['write_file', 'create_directory', 'edit_file'];
+          if (criticalTools.includes(tc.tool)) {
+            this.messages.push({
+              role: 'system',
+              content: `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`,
+            });
+            // Skip remaining tool calls in this iteration so the LLM can respond
+            break;
+          }
         }
 
         const resultContent = result.success

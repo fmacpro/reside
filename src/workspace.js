@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execSync } from 'node:child_process';
 
@@ -92,6 +92,7 @@ export class WorkspaceManager {
 
   /**
    * Auto-commit all changes in a specific app directory.
+   * Ensures .gitignore exists with node_modules/ before committing.
    * @param {string} appPath - Absolute path to the app directory
    * @param {string} message - Commit message
    * @returns {boolean} Whether commit was successful
@@ -99,6 +100,19 @@ export class WorkspaceManager {
   autoCommit(appPath, message) {
     try {
       if (!existsSync(join(appPath, '.git'))) return false;
+
+      // Ensure .gitignore exists with node_modules/ before staging anything.
+      // This prevents accidentally committing node_modules/ if npm install
+      // was run before git init or before .gitignore was created.
+      const gitignorePath = join(appPath, '.gitignore');
+      if (existsSync(gitignorePath)) {
+        const gitignoreContent = readFileSync(gitignorePath, 'utf-8');
+        if (!gitignoreContent.includes('node_modules/')) {
+          writeFileSync(gitignorePath, gitignoreContent + '\nnode_modules/\n', 'utf-8');
+        }
+      } else {
+        writeFileSync(gitignorePath, 'node_modules/\n.env\n*.log\n', 'utf-8');
+      }
 
       execSync('git add -A', { cwd: appPath, encoding: 'utf-8', stdio: 'pipe' });
 

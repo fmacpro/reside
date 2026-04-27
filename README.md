@@ -12,6 +12,7 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
 - **Web-aware** — Search the web via DuckDuckGo (no API key needed), fetch and extract article content from any URL, with automatic Puppeteer fallback for bot-protected sites.
 - **Loop-safe** — Detects when the LLM gets stuck in a tool-calling loop and forces a text response.
+- **Server-aware** — Blocks commands that start long-running server processes (e.g., `node app.js`, `npm start`) and tells the LLM to output instructions for the user instead.
 - **Compact CLI output** — One-line tool status summaries by default; `--debug` flag for full verbose output.
 - **Model-agnostic** — Works with any Ollama model, not just Qwen.
 
@@ -77,7 +78,10 @@ The agent will:
 3. Process your task through the LLM
 4. Execute tool calls (write files, run commands, etc.)
 5. Auto-commit changes to each app's git repo
-6. Print a summary and exit
+6. Tell you the command to run to start the app (e.g., `node app.js` in the app directory)
+7. Print a summary and exit
+
+> **Note:** The agent builds your app but does **not** run server processes (e.g., `node app.js`, `npm start`). These are long-running processes that can't be managed interactively. Instead, the agent tells you the exact command to run in your terminal.
 
 ### Conversational Chat Mode
 
@@ -179,7 +183,7 @@ The LLM has access to these tools:
 | `list_files(path)`                        | List files and directories in a path                                                                     |
 | `search_files(path, regex, file_pattern)` | Search for patterns in files using regex                                                                 |
 | `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
-| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`) |
+| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`). **Cannot start server processes** — use `finish()` to tell the user the command to run instead. |
 | `delete_file(path)`                       | Delete a file or directory                                                                               |
 | `search_web(query)`                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
 | `fetch_url(url, useBrowser?)`             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |

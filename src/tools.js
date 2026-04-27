@@ -111,7 +111,7 @@ export class ToolEngine {
         params: ['path', 'regex', 'file_pattern'],
       },
       execute_command: {
-        desc: 'Run a shell command (10s timeout; use & for long-running processes like servers). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls.',
+        desc: 'Run a shell command (10s timeout). Defaults to workdir root. Use cwd to run inside an app directory (e.g., "my-app"). Each call starts fresh — cd does NOT persist between calls. IMPORTANT: Do NOT use this to start server apps (e.g., node app.js, npm start) — those are long-running processes that cannot be managed here. Instead, tell the user the command to run.',
         params: ['command', 'cwd?'],
       },
       create_directory: {
@@ -173,6 +173,23 @@ export class ToolEngine {
         }
         this._ensureDir(join(fullPath, '..'));
         writeFileSync(fullPath, String(content), 'utf-8');
+
+        // Verify the file was actually written by checking it exists and has the expected size
+        if (!existsSync(fullPath)) {
+          return {
+            success: false,
+            error: `File was not created at ${path} — write operation failed silently`,
+          };
+        }
+        const actualSize = statSync(fullPath).size;
+        const expectedSize = Buffer.byteLength(String(content), 'utf-8');
+        if (actualSize !== expectedSize) {
+          return {
+            success: false,
+            error: `File ${path} was written but size mismatch: expected ${expectedSize} bytes, got ${actualSize} bytes`,
+          };
+        }
+
         return {
           success: true,
           output: `Written ${String(content).length} bytes to ${path}`,
@@ -282,6 +299,46 @@ export class ToolEngine {
           }
         }
 
+        // Pre-execution check: detect server-starting commands and tell the LLM
+        // to output instructions instead of running them. Servers are long-running
+        // processes that would hit the 10s timeout and can't be managed interactively.
+        const serverPatterns = [
+          /^node\s+\S+\.js\s*$/i,           // node app.js
+          /^npm\s+start\s*$/i,               // npm start
+          /^npm\s+run\s+(dev|start|serve)/i,  // npm run dev/start/serve
+          /^python3?\s+\S+\.py\s*$/i,         // python app.py
+          /^deno\s+run\s+/i,                  // deno run
+          /^bun\s+run\s+/i,                   // bun run
+          /^bun\s+\S+\.(js|ts)\s*$/i,         // bun app.js
+          /^npx\s+(serve|http-server|live-server)/i, // npx serve etc.
+        ];
+        const isServerCommand = serverPatterns.some(p => p.test(command.trim()));
+        if (isServerCommand) {
+          return {
+            success: false,
+            error: `The command "${command}" starts a long-running server process, which cannot be managed interactively in this environment. Instead of running it, tell the user the exact command they need to run in their terminal to start the app. For example: "Run \`${command}\` in the ${cwd ? cwd : 'app'} directory to start the app."`,
+            data: { exitCode: null, stdout: '', stderr: '' },
+          };
+        }
+
+        // Pre-execution check: if no cwd was provided and the command is npm/node-related,
+        // check if the user likely meant to run it inside an app directory.
+        if (!cwd && workingDir === this.workspaceDir) {
+          const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+          if (apps.length > 0) {
+            // Check for npm commands that should run inside an app
+            const needsAppDir = /^npm\s+(init|install|run|start|test)/.test(command.trim());
+            if (needsAppDir) {
+              const appNames = apps.map(a => `"${a.name}"`).join(', ');
+              return {
+                success: false,
+                error: `Command "${command}" is running in the workdir root, but it should run inside an app directory. Available apps: ${appNames}. Use the cwd parameter, e.g.: execute_command({"command":"${command}","cwd":"${apps[0].name}"})`,
+              };
+            }
+          }
+        }
+
         // Use spawn for async execution with timeout
         return new Promise(resolve => {
           const child = spawn('/bin/sh', ['-c', command], {
@@ -294,14 +351,23 @@ export class ToolEngine {
           let stdout = '';
           let stderr = '';
           let timedOut = false;
+          let resolved = false;
 
           const timeout = setTimeout(() => {
             timedOut = true;
-            child.kill('SIGTERM');
-            // Give it a moment to clean up, then SIGKILL
-            setTimeout(() => {
-              try { child.kill('SIGKILL'); } catch {}
-            }, 1000);
+
+            // Don't kill the process — it may be a long-running server.
+            // Instead, detach it so it continues running in the background,
+            // and return whatever output we've collected so far.
+            child.unref();
+
+            const output = stdout.trim() || stderr.trim() || '(process started, still running)';
+            resolved = true;
+            resolve({
+              success: true,
+              output: `${output}\n\n⚠️ Command timed out after 10s — the process is still running in the background. Use the URL/output above to access the server.`,
+              data: { exitCode: null, timedOut: true, stdout, stderr, background: true },
+            });
           }, 10_000);
 
           child.stdout.on('data', data => { stdout += data.toString(); });
@@ -310,29 +376,55 @@ export class ToolEngine {
           child.on('close', code => {
             clearTimeout(timeout);
 
-            if (timedOut) {
-              // Command timed out — likely a long-running process (server, watcher, etc.)
-              // Return success with the output collected so far
-              const output = stdout.trim() || stderr.trim() || '(process started, still running)';
-              resolve({
-                success: true,
-                output: `${output}\n\n⚠️ Command timed out after 10s — long-running processes should use & (background) or nohup.`,
-                data: { exitCode: null, timedOut: true, stdout, stderr },
-              });
-              return;
-            }
+            if (resolved) return; // Already handled by timeout
 
             if (code === 0) {
+              // Post-execution verification: if this was an npm install, check node_modules was created
+              let verificationNote = '';
+              const isNpmInstall = /^npm\s+install/.test(command.trim());
+              if (isNpmInstall) {
+                const nodeModulesPath = join(workingDir, 'node_modules');
+                if (!existsSync(nodeModulesPath)) {
+                  verificationNote = '\n\n⚠️ npm install reported success but node_modules/ was not found. Dependencies may not have been installed correctly.';
+                } else {
+                  const pkgCount = readdirSync(nodeModulesPath).length;
+                  verificationNote = `\n\n✅ node_modules/ created with ${pkgCount} packages.`;
+                }
+              }
+
+              resolved = true;
               resolve({
                 success: true,
-                output: stdout.trim() || '(command completed with no output)',
+                output: (stdout.trim() || '(command completed with no output)') + verificationNote,
                 data: { exitCode: 0, stdout, stderr },
               });
             } else {
+              // Command failed — check if the issue is a missing cwd parameter.
+              // If no cwd was provided and the error mentions a file not found,
+              // check if that file exists in an app subdirectory.
+              let cwdHint = '';
+              if (!cwd) {
+                const fileRefMatch = command.match(/(?:node|python3?|deno|bun)\s+(\S+\.\w+)/);
+                if (fileRefMatch) {
+                  const referencedFile = fileRefMatch[1];
+                  // Search app subdirectories for this file
+                  const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
+                    .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+                  for (const app of apps) {
+                    const appFilePath = join(this.workspaceDir, app.name, referencedFile);
+                    if (existsSync(appFilePath)) {
+                      cwdHint = `\n\n💡 Hint: The file "${referencedFile}" exists in the "${app.name}/" directory. You likely forgot to set cwd="${app.name}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${app.name}"})`;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              resolved = true;
               resolve({
                 success: false,
-                output: stdout.trim() || stderr.trim() || `(exit code ${code})`,
-                error: stderr.trim() || `Command failed with exit code ${code}`,
+                output: (stdout.trim() || stderr.trim() || `(exit code ${code})`) + cwdHint,
+                error: (stderr.trim() || `Command failed with exit code ${code}`) + cwdHint,
                 data: { exitCode: code, stdout, stderr },
               });
             }
@@ -340,6 +432,8 @@ export class ToolEngine {
 
           child.on('error', err => {
             clearTimeout(timeout);
+            if (resolved) return;
+            resolved = true;
             resolve({
               success: false,
               error: `Failed to execute command: ${err.message}`,
@@ -352,6 +446,20 @@ export class ToolEngine {
       create_directory: async ({ path }) => {
         if (!path) return { success: false, error: 'Missing required argument: path' };
         const fullPath = this._resolvePath(path);
+
+        // Check if directory already exists — prevent accidental overwrite of existing apps
+        const alreadyExists = existsSync(fullPath);
+        if (alreadyExists) {
+          // Check if it's a non-empty directory (likely an existing app)
+          const entries = readdirSync(fullPath);
+          if (entries.length > 0 && !entries.every(e => e.startsWith('.'))) {
+            return {
+              success: false,
+              error: `Directory "${path}" already exists and contains files. Use a different name or delete it first with delete_file().`,
+            };
+          }
+        }
+
         this._ensureDir(fullPath);
 
         // Auto-init git ONLY for top-level app directories (direct children of workdir).
@@ -367,8 +475,8 @@ export class ToolEngine {
 
         return {
           success: true,
-          output: `Created directory: ${path}`,
-          data: { path },
+          output: alreadyExists ? `Directory already exists: ${path}` : `Created directory: ${path}`,
+          data: { path, alreadyExists },
         };
       },
 
