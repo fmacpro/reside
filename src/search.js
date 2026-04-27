@@ -302,13 +302,12 @@ export async function searchWeb(query, options = {}) {
       }
     }
 
-    // Build output with actual article content
+    // Build output with actual article content (no URL line — avoids double-rendering in markdown)
     const output = followedResults
       .map((r, i) => {
         const lines = [
           `${i + 1}. ${r.articleTitle}`,
           `   ${r.summary}`,
-          `   ${r.url}`,
         ];
         return lines.join('\n');
       })
