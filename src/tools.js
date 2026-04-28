@@ -218,8 +218,37 @@ export class ToolEngine {
           };
         }
 
+        // Fix: Detect and repair JavaScript string literals that were broken by JSON parsing.
+        // When the LLM writes code like: console.log("Adding a fish...\n");
+        // the \n in the JSON string value gets parsed as an actual newline character.
+        // This results in a broken JavaScript file with a literal newline inside a string:
+        //   console.log("Adding a fish...
+        //   ");
+        // We detect this by matching the entire string from opening quote to closing quote,
+        // then replacing all literal newlines inside with \n.
+        // This handles both simple cases (one broken newline) and multi-line strings
+        // (multiple broken newlines like "Line 1\nLine 2\nLine 3\n").
+        let fixedContent = String(content);
+        if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(path)) {
+          // For double-quoted strings: match "..." and replace \n inside with \\n
+          const fixDouble = (str) => str.replace(/"([^"]*)"/g, (m) => m.replace(/\n/g, '\\n'));
+          // For single-quoted strings: match '...' and replace \n inside with \\n
+          const fixSingle = (str) => str.replace(/'([^']*)'/g, (m) => m.replace(/\n/g, '\\n'));
+          // For template literals: only repair when the continuation starts with a backtick
+          // (indicating a broken template literal, not a legitimate multi-line one).
+          // Legitimate multi-line template literals (with actual newlines) should NOT be repaired.
+          const fixTemplate = (str) => str.replace(/(`[^`\n]*?)\n(\s*`[^`\n]*)/g, (m, b, a) => a.trimStart().startsWith('`') ? b + '\\n' + a.trimStart() : m);
+          let prev;
+          do {
+            prev = fixedContent;
+            fixedContent = fixDouble(fixedContent);
+            fixedContent = fixSingle(fixedContent);
+            fixedContent = fixTemplate(fixedContent);
+          } while (fixedContent !== prev);
+        }
+
         this._ensureDir(join(fullPath, '..'));
-        writeFileSync(fullPath, String(content), 'utf-8');
+        writeFileSync(fullPath, fixedContent, 'utf-8');
 
         // Verify the file was actually written by checking it exists and has the expected size
         if (!existsSync(fullPath)) {
@@ -229,7 +258,7 @@ export class ToolEngine {
           };
         }
         const actualSize = statSync(fullPath).size;
-        const expectedSize = Buffer.byteLength(String(content), 'utf-8');
+        const expectedSize = Buffer.byteLength(fixedContent, 'utf-8');
         if (actualSize !== expectedSize) {
           return {
             success: false,
@@ -271,11 +300,29 @@ export class ToolEngine {
           return { success: false, error: `Could not find the specified text in ${path}` };
         }
 
-        const newContent = content.replace(old_string, new_string);
+        // Fix broken string literals in the new content (same as write_file)
+        let fixedNewString = String(new_string);
+        if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(path)) {
+          // For double-quoted strings: match "..." and replace \n inside with \\n
+          const fixDouble = (str) => str.replace(/"([^"]*)"/g, (m) => m.replace(/\n/g, '\\n'));
+          // For single-quoted strings: match '...' and replace \n inside with \\n
+          const fixSingle = (str) => str.replace(/'([^']*)'/g, (m) => m.replace(/\n/g, '\\n'));
+          // For template literals: only repair when the continuation starts with a backtick
+          const fixTemplate = (str) => str.replace(/(`[^`\n]*?)\n(\s*`[^`\n]*)/g, (m, b, a) => a.trimStart().startsWith('`') ? b + '\\n' + a.trimStart() : m);
+          let prev;
+          do {
+            prev = fixedNewString;
+            fixedNewString = fixDouble(fixedNewString);
+            fixedNewString = fixSingle(fixedNewString);
+            fixedNewString = fixTemplate(fixedNewString);
+          } while (fixedNewString !== prev);
+        }
+
+        const newContent = content.replace(old_string, fixedNewString);
         writeFileSync(fullPath, newContent, 'utf-8');
         return {
           success: true,
-          output: `Edited ${path}: replaced "${old_string.substring(0, 50)}..." with "${new_string.substring(0, 50)}..."`,
+          output: `Edited ${path}: replaced "${old_string.substring(0, 50)}..." with "${fixedNewString.substring(0, 50)}..."`,
           data: { path, replaced: old_string.length, bytes: newContent.length },
         };
       },

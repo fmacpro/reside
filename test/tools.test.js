@@ -154,6 +154,166 @@ describe('ToolEngine', () => {
     });
   });
 
+  describe('write_file - broken JS string literal repair (the fishtank-app bug)', () => {
+    it('repairs double-quoted strings broken by JSON \\n -> newline conversion', async () => {
+      // Simulate what happens when the LLM writes code with \n in a JSON string value.
+      // The LLM's JSON looks like: {"content": "console.log(\"Adding a fish...\\n\");"}
+      // After JSON.parse, the \n becomes an actual newline character.
+      // The content passed to write_file would be:
+      //   console.log("Adding a fish...
+      //   ");
+      const brokenContent = 'console.log("Adding a fish...\n");';
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content: brokenContent,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      // The repair should have converted the literal newline back to \n
+      assert.equal(written, 'console.log("Adding a fish...\\n");');
+      // Verify the file is valid JavaScript (no SyntaxError)
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), ''); // No output means valid syntax
+      cleanup(dir);
+    });
+
+    it('repairs single-quoted strings broken by JSON \\n -> newline conversion', async () => {
+      const brokenContent = "console.log('Adding a fish...\n');";
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content: brokenContent,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      assert.equal(written, "console.log('Adding a fish...\\n');");
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
+    it('repairs template literal strings broken by JSON \\n -> newline conversion', async () => {
+      const brokenContent = 'console.log(`Adding a fish...\n`);';
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content: brokenContent,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      assert.equal(written, 'console.log(`Adding a fish...\\n`);');
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
+    it('repairs multi-line strings with multiple \\n sequences', async () => {
+      // Simulate a more complex case with multiple \n sequences
+      const brokenContent = 'const msg = "Line 1\nLine 2\nLine 3\n";';
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content: brokenContent,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      assert.equal(written, 'const msg = "Line 1\\nLine 2\\nLine 3\\n";');
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
+    it('does NOT repair legitimate multi-line strings (template literals with actual newlines)', async () => {
+      // Template literals CAN legitimately span multiple lines, so we should NOT repair them
+      const validMultiLine = 'const msg = `Line 1\nLine 2\nLine 3`;';
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content: validMultiLine,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      // Should remain unchanged — template literals with actual newlines are valid JS
+      assert.equal(written, validMultiLine);
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
+    it('does NOT repair non-JS files', async () => {
+      const brokenContent = 'console.log("Adding a fish...\n");';
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.txt',
+        content: brokenContent,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.txt'), 'utf-8');
+      // Non-JS files should NOT be repaired
+      assert.equal(written, brokenContent);
+      cleanup(dir);
+    });
+
+    it('repairs strings in edit_file new_string (the same bug via edit_file)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      // Write a valid JS file first
+      writeFileSync(join(dir, 'app.js'), 'const msg = "hello";\nconsole.log(msg);', 'utf-8');
+      // Now edit it with a broken string (simulating LLM sending \n in JSON)
+      const brokenNewString = 'const msg = "hello\nworld\n";';
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        old_string: 'const msg = "hello";',
+        new_string: brokenNewString,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      assert.equal(written, 'const msg = "hello\\nworld\\n";\nconsole.log(msg);');
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
+    it('end-to-end: simulates the exact fishtank-app failure scenario', async () => {
+      // This is the EXACT scenario that failed:
+      // 1. LLM writes a JS file with console.log("Adding a fish...\n");
+      // 2. The \n in the JSON gets converted to an actual newline by JSON.parse
+      // 3. The file ends up with a broken string literal
+      // 4. Running node app.js throws SyntaxError
+      const { dir, engine } = createTestWorkspace();
+
+      // Step 1: Create the app directory
+      await engine.execute('create_directory', { path: 'fishtank-app' });
+
+      // Step 2: Write the broken content (simulating what JSON.parse does to \n)
+      // The LLM's JSON: {"content": "console.log(\"Adding a fish...\\n\");"}
+      // After JSON.parse, the content string has an actual newline:
+      const brokenContent = `console.log("Adding a fish...\n");`;
+      const writeResult = await engine.execute('write_file', {
+        path: 'fishtank-app/app.js',
+        content: brokenContent,
+      });
+      assert.equal(writeResult.success, true);
+
+      // Step 3: Verify the file is valid JavaScript (the repair should have fixed it)
+      const written = readFileSync(join(dir, 'fishtank-app', 'app.js'), 'utf-8');
+      assert.equal(written, 'console.log("Adding a fish...\\n");');
+
+      // Step 4: Run node --check to verify syntax is valid
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'fishtank-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+
+      cleanup(dir);
+    });
+  });
+
   describe('list_files', () => {
     it('lists files in a directory', async () => {
       const { dir, engine } = createTestWorkspace();
