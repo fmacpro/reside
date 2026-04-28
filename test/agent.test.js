@@ -219,7 +219,7 @@ describe('Agent — finish() interception', () => {
     // Verify proactive guidance was injected after npm install
     const systemMessages = agent.messages.filter(m => m.role === 'system');
     const guidanceMessage = systemMessages.find(m =>
-      m.content.includes('Dependencies installed successfully') &&
+      (m.content.includes('Dependencies installed successfully') || m.content.includes('Project initialized successfully')) &&
       m.content.includes('write the main application entry point')
     );
     assert.ok(guidanceMessage, 'Should inject proactive guidance after npm install');
@@ -246,7 +246,7 @@ describe('Agent — finish() interception', () => {
     // Verify NO proactive guidance was injected (entry point already existed)
     const systemMessages = agent.messages.filter(m => m.role === 'system');
     const guidanceMessage = systemMessages.find(m =>
-      m.content.includes('Dependencies installed successfully')
+      m.content.includes('Dependencies installed successfully') || m.content.includes('Project initialized successfully')
     );
     assert.equal(guidanceMessage, undefined, 'Should NOT inject proactive guidance when entry point exists');
 

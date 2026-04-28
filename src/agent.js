@@ -335,6 +335,73 @@ export class Agent {
             continue;
           }
 
+          // Detect: LLM responded with text-only after a finish() interception.
+          // The LLM often explains what to do instead of actually writing the code.
+          // This happens when the LLM calls finish() in the same batch as npm init,
+          // we skip the finish() and inject guidance, but the LLM's next response
+          // is text-only (no tool calls) — it explains how to use the app instead
+          // of actually writing the source file.
+          const lastSystemMsg = this.messages.slice().reverse().find(m => m.role === 'system');
+          const hasFinishInterceptionGuidance = lastSystemMsg?.content?.includes('called finish() in the same response as npm init/install');
+
+          if (hasFinishInterceptionGuidance) {
+            console.log('   ⚠️ Text-only response after finish() interception — re-prompting to use write_file()');
+            this.messages.push({
+              role: 'system',
+              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. This is your last chance — if you respond with text or call finish() again, the session will end. Use the correct JSON format for tool calls:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+            });
+            continue;
+          }
+
+          // Detect: LLM outputs a simulated tool result (JSON with "result" field)
+          // instead of actually calling the tool. This happens when the LLM is
+          // confused about the tool format and outputs something like:
+          //   {"tool": "write_file", "arguments": {...}, "result": "success"}
+          // Instead of re-prompting (which the LLM ignores), we extract the
+          // tool call from the simulated result and execute it directly.
+          const simulatedToolMatch = lastText.match(/\{\s*"tool"\s*:\s*"(write_file|edit_file|create_directory)"\s*,\s*"arguments"\s*:\s*(\{.*?\})\s*,\s*"result"\s*:\s*"(success|error)"/s);
+          if (simulatedToolMatch) {
+            const simulatedTool = simulatedToolMatch[1];
+            let simulatedArgs;
+            try {
+              simulatedArgs = JSON.parse(simulatedToolMatch[2]);
+            } catch {
+              // Can't parse arguments — fall through to re-prompt
+            }
+            if (simulatedArgs) {
+              console.log(`   ⚠️ Response contains simulated tool result — extracting and executing ${simulatedTool}() call`);
+              // Inject the extracted tool call into the tool call list so it gets
+              // executed in the next iteration's tool loop
+              toolCalls.push({ tool: simulatedTool, arguments: simulatedArgs });
+              // Don't continue — let the tool loop execute this call
+            } else {
+              console.log('   ⚠️ Response contains simulated tool result but arguments could not be parsed — re-prompting');
+              this.messages.push({
+                role: 'system',
+                content: 'Your previous response contained a JSON tool response block (like {"tool":"write_file","arguments":{...},"result":"success"}) as text instead of actually calling the tool. You MUST use the actual tool syntax to call write_file(). Do NOT output JSON tool responses as text — call the tool directly using the correct format. Then call finish() AFTER the file is written successfully.',
+              });
+              continue;
+            }
+          }
+
+          // Detect: LLM responded with text-only after a critical tool failure.
+          // The LLM often explains what to do instead of actually doing it (calling
+          // the tool). Re-prompt it to use write_file() to create the source file.
+          const lastAssistantMsg = this.messages.slice().reverse().find(m => m.role === 'assistant');
+          const lastToolMsg = this.messages.slice().reverse().find(m => m.role === 'tool');
+          const hasRecentCriticalFailure = lastToolMsg?.content?.includes('"result": "error"') &&
+            (lastToolMsg.content.includes('"write_file"') || lastToolMsg.content.includes('"edit_file"') || lastToolMsg.content.includes('"create_directory"'));
+          const hasRecentGuidance = lastSystemMsg?.content?.includes('tool just failed');
+
+          if (hasRecentCriticalFailure && hasRecentGuidance) {
+            console.log('   ⚠️ Text-only response after critical tool failure — re-prompting to use tools');
+            this.messages.push({
+              role: 'system',
+              content: 'Your previous response explained what to do but did NOT actually call any tools. You MUST use write_file() to create the source code file. Do NOT just explain — actually call the tool. If you were trying to edit package.json, stop — "type": "module" is already set. Just write the source file (e.g., app.js) using write_file().',
+            });
+            continue;
+          }
+
           console.log(`\n🤖 ${renderText(lastText)}`);
         }
         finished = true;
@@ -463,16 +530,18 @@ export class Agent {
             }
           }
 
-          // After a successful npm install, proactively guide the LLM to write
-          // source files next. The LLM often searches the web, tries to run
-          // non-existent files, or calls finish() after installing deps — this
-          // guidance is injected BEFORE the LLM's next turn to prevent that.
+          // After a successful npm init or npm install, proactively guide the
+          // LLM to write source files next. The LLM often searches the web,
+          // tries to run non-existent files, or calls finish() after init/install
+          // without ever writing the source code — this guidance is injected
+          // BEFORE the LLM's next turn to prevent that.
           if (tc.tool === 'execute_command') {
             const cmd = tc.arguments?.command || '';
-            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenEntryPoint) {
+            const isInitOrInstall = /^npm\s+(init|install)/.test(cmd.trim());
+            if (isInitOrInstall && !this._hasWrittenEntryPoint) {
               this.messages.push({
                 role: 'system',
-                content: 'Dependencies installed successfully. Now you MUST write the main application entry point file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. This file should contain the actual application logic (routes, handlers, etc.) — not just data files like .json. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the main code file first.',
+                content: 'Project initialized successfully. Now you MUST write the main application entry point file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. This file should contain the actual application logic — not just data files like .json. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the main code file first.',
               });
             }
           }
@@ -529,7 +598,17 @@ export class Agent {
                 output: `Error: ${result.error}`,
               }),
             });
-            const guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
+
+            // Detect: LLM tried to edit package.json to add "type": "module" but
+            // the system already added it automatically after npm init -y.
+            // The LLM searches for "type": "commonjs" or similar text that doesn't
+            // exist because "type": "module" is already present.
+            let guidance;
+            if (tc.tool === 'edit_file' && (tc.arguments?.file_path || '').endsWith('package.json')) {
+              guidance = `The edit_file() call on package.json failed because "type": "module" is ALREADY set in the file. The system automatically adds "type": "module" after npm init -y. You do NOT need to edit package.json to add it. Just proceed to write your source code files using write_file(). Do NOT retry the edit_file on package.json.`;
+            } else {
+              guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
+            }
             this.messages.push({
               role: 'system',
               content: guidance,
@@ -696,13 +775,52 @@ export class Agent {
               this._finishWithoutSourceCount++;
               console.log(`   ⚠️ finish() called but no entry point file was written — intercepting (#${this._finishWithoutSourceCount})`);
 
+              // Check if the LLM called finish() in the same iteration as npm init
+              // or npm install, without ever writing a source file. This is a common
+              // pattern where the LLM initializes the project and then immediately
+              // calls finish() without writing any code.
+              const hasInitInSameIteration = toolCalls.some(t =>
+                t.tool === 'execute_command' && /^npm\s+(init|install)/.test(t.arguments?.command || '')
+              );
+              const hasWriteInSameBatch = toolCalls.some(t =>
+                t.tool === 'write_file' || t.tool === 'edit_file'
+              );
+
               // If the LLM has already been told to write the entry point and is
               // calling finish() again, force-end the session. The LLM has proven
-              // it won't follow the guidance.
+              // it won't follow the guidance to write code.
               if (this._finishWithoutSourceCount >= 2) {
                 console.log('   ⚠️ LLM repeatedly called finish() without writing an entry point — ending session.');
                 finished = true;
                 break;
+              }
+
+              // CRITICAL: When finish() is called in the same batch as npm init/install
+              // and no write_file/edit_file is in the batch, the LLM is skipping the
+              // code-writing step entirely. The proactive guidance injected after npm
+              // init succeeds (line 490-498) doesn't help because the finish() call is
+              // already queued in the same iteration. We need to:
+              // 1. NOT execute the finish() tool at all (skip the result injection)
+              // 2. Inject a system message that the LLM will see on its next turn
+              // 3. Let the loop continue so the LLM gets another chance
+              if (hasInitInSameIteration && !hasWriteInSameBatch) {
+                // Skip finish() entirely — don't inject a tool result, just inject
+                // guidance and let the loop continue. The LLM will see the guidance
+                // on its next turn and (hopefully) write the code.
+                console.log('   ⚠️ finish() called in same batch as npm init/install without writing any code — skipping finish() and re-prompting');
+                this.messages.push({
+                  role: 'system',
+                  content: 'You called finish() in the same response as npm init/install, but you did NOT write any source code. You MUST call write_file() NOW to create the application source code file. Do NOT call finish() again — write the code file first. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+                });
+                // Skip this finish() call — don't inject a tool result, don't set finished
+                continue;
+              }
+
+              let guidance;
+              if (hasInitInSameIteration) {
+                guidance = 'You just initialized the project but did NOT write any source code. You MUST use write_file() to create the main application entry point file (e.g., app.js) with the actual application logic. Do NOT call finish() — write the code file first. Call write_file() with the path to your app entry point (e.g., "app-name/app.js") and the complete source code as the content.';
+              } else {
+                guidance = 'You called finish() without writing the main application entry point file (e.g., app.js, index.js, server.js). Writing helper modules or data files like .json is not enough. You MUST write the entry point file with the actual application logic using write_file() before calling finish(). Do NOT call finish() again until you have created the entry point. Also, do NOT try to run the app (e.g., "node app.js") before writing the file — the file does not exist yet. Write the file first, then run it.';
               }
 
               this.messages.push({
@@ -716,7 +834,7 @@ export class Agent {
               });
               this.messages.push({
                 role: 'system',
-                content: 'You called finish() without writing the main application entry point file (e.g., app.js, index.js, server.js). Writing helper modules or data files like .json is not enough. You MUST write the entry point file with the actual application logic using write_file() before calling finish(). Do NOT call finish() again until you have created the entry point. Also, do NOT try to run the app (e.g., "node app.js") before writing the file — the file does not exist yet. Write the file first, then run it.',
+                content: guidance,
               });
               // Do NOT set finished = true — the LLM gets one more chance to write the code
               break;
