@@ -186,6 +186,7 @@ export class Agent {
       'app.go', 'main.go',
       'app.rs', 'main.rs',
       'index.php',
+      'index.html',
       'app.mjs', 'index.mjs',
       'app.cjs', 'index.cjs',
     ]);
@@ -631,7 +632,7 @@ export class Agent {
             // Track whether a CODE file (not just data like .json) was written.
             // The LLM sometimes writes recipes.json but still hasn't written app.js.
             const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
-            const codeExtensions = /\.(js|ts|jsx|tsx|py|rb|php|go|rs|c|cpp|java|mjs|cjs)$/i;
+            const codeExtensions = /\.(js|ts|jsx|tsx|py|rb|php|go|rs|c|cpp|java|mjs|cjs|html)$/i;
             if (codeExtensions.test(filePath)) {
               this._hasWrittenCodeFile = true;
               // Check if this is a recognized entry point file (e.g., app.js, index.js).

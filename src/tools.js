@@ -1361,7 +1361,7 @@ export class ToolEngine {
         }
 
         // Look for common entry point files
-        const entryPoints = ['app.js', 'index.js', 'server.js', 'main.js', 'app.mjs', 'index.mjs'];
+        const entryPoints = ['app.js', 'index.js', 'server.js', 'main.js', 'app.mjs', 'index.mjs', 'index.html'];
         let entryPoint = null;
         for (const ep of entryPoints) {
           const epPath = join(appPath, ep);
@@ -1373,6 +1373,16 @@ export class ToolEngine {
 
         if (!entryPoint) {
           return { success: false, error: `No entry point file found in "${appDir}/". Expected one of: ${entryPoints.join(', ')}. Write the source code file first using write_file().` };
+        }
+
+        // For HTML entry points, we can't run them with node — they're static files.
+        // Return success immediately since there's nothing to test.
+        if (entryPoint.endsWith('.html')) {
+          return {
+            success: true,
+            output: `Static HTML file "${entryPoint}" found — no runtime test needed. Open this file in a browser to view the app.`,
+            data: { appDir, entryPoint, static: true },
+          };
         }
 
         // Build the command: node <entrypoint> [args]
