@@ -37,7 +37,13 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
  */
 const MODEL_PRESETS = [
   {
-    // qwen3 models (qwen3:latest, qwen3.5:latest, etc.)
+    // qwen3-coder / qwen3-coder-next models
+    // MoE architecture with ~3B active params — very efficient for the quality.
+    match: (name) => /^qwen3-coder/i.test(name),
+    config: { maxTokens: 16384, temperature: 0.1, numCtx: 32768 },
+  },
+  {
+    // qwen3 / qwen3.5 / qwen3.6 models
     match: (name) => /^qwen3/i.test(name),
     config: { maxTokens: 16384, temperature: 0.1, numCtx: 32768 },
   },
@@ -52,8 +58,18 @@ const MODEL_PRESETS = [
     config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
   },
   {
-    // deepseek-coder models
+    // deepseek-coder / deepseek-coder-v2 models
     match: (name) => /^deepseek/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // opencoder models (new coding-focused model family)
+    match: (name) => /^opencoder/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // exaone models (LG AI Research, strong on coding)
+    match: (name) => /^exaone/i.test(name),
     config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
   },
   {
@@ -62,29 +78,54 @@ const MODEL_PRESETS = [
     config: { maxTokens: 4096, temperature: 0.1, numCtx: 16384 },
   },
   {
-    // llama3 / llama3.1 / llama3.2 models
+    // llama3 / llama3.1 / llama3.2 / llama3.3 models
     match: (name) => /^llama3/i.test(name),
     config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
   },
   {
-    // mistral / mixtral models
+    // mistral / mixtral / mistral-small / mistral-nemo models
     match: (name) => /^mistr/i.test(name),
     config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
   },
   {
-    // phi models
+    // phi / phi-4 / phi-4-mini models
     match: (name) => /^phi/i.test(name),
     config: { maxTokens: 4096, temperature: 0.1, numCtx: 4096 },
   },
   {
-    // gemma models
-    match: (name) => /^gemma/i.test(name),
+    // gemma3 models (Google's latest, 12B at Q4_K_M = 8.1 GB)
+    match: (name) => /^gemma3/i.test(name),
+    config: { maxTokens: 16384, temperature: 0.1, numCtx: 32768 },
+  },
+  {
+    // gemma / gemma2 / codegemma models (older generations)
+    match: (name) => /^gemma[^3]|^codegemma/i.test(name),
     config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
   },
   {
-    // starcoder models
+    // starcoder / starcoder2 models
     match: (name) => /^starcoder/i.test(name),
     config: { maxTokens: 4096, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // nvidia nemotron / llama-nemotron models
+    match: (name) => /nemotron/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // granite models (IBM)
+    match: (name) => /^granite/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // dolphin models (fine-tuned llama)
+    match: (name) => /^dolphin/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // olmo models (AI2)
+    match: (name) => /^olmo/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
   },
   {
     // Default fallback for any other model
@@ -95,7 +136,7 @@ const MODEL_PRESETS = [
 
 const DEFAULT_CONFIG = {
   ollamaHost: 'http://localhost:11434',
-  model: 'qwen2.5-coder:7b',
+  model: 'qwen3.5:latest',
   workdir: resolve(process.cwd(), 'workdir'),
   maxIterations: 25,
   autoCommit: true,
