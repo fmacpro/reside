@@ -154,6 +154,13 @@ export class Agent {
     // Used to detect when the LLM calls finish() without writing any code.
     this._hasWrittenSourceFile = false;
 
+    // Track whether any CODE source files (e.g., .js, .ts, .py) have been
+    // written, as opposed to data files (e.g., .json, .csv, .txt). The LLM
+    // sometimes writes a data file like recipes.json but still hasn't written
+    // the actual application entry point. This flag is stricter: it only
+    // counts files with executable code extensions.
+    this._hasWrittenCodeFile = false;
+
     // Track how many times finish() has been intercepted without source files.
     // After the first interception, if the LLM calls finish() again without
     // writing source files, force-end the session — the LLM has proven it
@@ -400,6 +407,13 @@ export class Agent {
           // Used to detect when the LLM calls finish() without writing any code.
           if (tc.tool === 'write_file' || tc.tool === 'edit_file') {
             this._hasWrittenSourceFile = true;
+            // Track whether a CODE file (not just data like .json) was written.
+            // The LLM sometimes writes recipes.json but still hasn't written app.js.
+            const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
+            const codeExtensions = /\.(js|ts|jsx|tsx|py|rb|php|go|rs|c|cpp|java|mjs|cjs)$/i;
+            if (codeExtensions.test(filePath)) {
+              this._hasWrittenCodeFile = true;
+            }
           }
 
           // After a successful npm install, proactively guide the LLM to write
@@ -408,10 +422,10 @@ export class Agent {
           // guidance is injected BEFORE the LLM's next turn to prevent that.
           if (tc.tool === 'execute_command') {
             const cmd = tc.arguments?.command || '';
-            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenSourceFile) {
+            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenCodeFile) {
               this.messages.push({
                 role: 'system',
-                content: 'Dependencies installed successfully. Now you MUST write the application source files using write_file() before doing anything else. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the actual code files first (e.g., app.js, index.js, or whatever the app needs). Create subdirectories with create_directory() if needed, then write the source files with write_file().',
+                content: 'Dependencies installed successfully. Now you MUST write the main application entry point file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. This file should contain the actual application logic (routes, handlers, etc.) — not just data files like .json. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the main code file first.',
               });
             }
           }
@@ -591,19 +605,20 @@ export class Agent {
           });
 
           if (tc.tool === 'finish') {
-            // If the LLM calls finish() without ever writing any source files,
-            // intercept it and inject guidance instead of ending the session.
-            // The LLM often searches the web, installs deps, then calls finish()
-            // without writing the actual application code.
-            if (!this._hasWrittenSourceFile) {
+            // If the LLM calls finish() without ever writing any code source files
+            // (e.g., .js, .ts, .py), intercept it and inject guidance instead of
+            // ending the session. The LLM often searches the web, installs deps,
+            // or writes data files like .json, then calls finish() without writing
+            // the actual application code.
+            if (!this._hasWrittenCodeFile) {
               this._finishWithoutSourceCount++;
-              console.log(`   ⚠️ finish() called but no source files were written — intercepting (#${this._finishWithoutSourceCount})`);
+              console.log(`   ⚠️ finish() called but no code files were written — intercepting (#${this._finishWithoutSourceCount})`);
 
-              // If the LLM has already been told to write source files and is
+              // If the LLM has already been told to write code files and is
               // calling finish() again, force-end the session. The LLM has proven
               // it won't follow the guidance.
               if (this._finishWithoutSourceCount >= 2) {
-                console.log('   ⚠️ LLM repeatedly called finish() without writing source files — ending session.');
+                console.log('   ⚠️ LLM repeatedly called finish() without writing code files — ending session.');
                 finished = true;
                 break;
               }
@@ -614,12 +629,12 @@ export class Agent {
                   tool: tc.tool,
                   arguments: tc.arguments,
                   result: 'error',
-                  output: 'Error: You called finish() but never wrote any source files. You MUST use write_file() to create the application source code (e.g., app.js, index.js) before calling finish(). The user asked you to build an app — searching the web and installing packages is not enough. Write the actual code first.',
+                  output: 'Error: You called finish() but never wrote any application code files. Writing data files like .json is not enough — you MUST use write_file() to create the main application entry point (e.g., app.js, index.js) with the actual logic before calling finish().',
                 }),
               });
               this.messages.push({
                 role: 'system',
-                content: 'You called finish() without writing any source files. The user asked you to build an app. You MUST write the actual application code using write_file() before calling finish(). Do NOT call finish() again until you have created the source files.',
+                content: 'You called finish() without writing any application code files. Writing data files like .json is not enough. You MUST write the main application entry point (e.g., app.js, index.js) with the actual application logic using write_file() before calling finish(). Do NOT call finish() again until you have created the code file.',
               });
               // Do NOT set finished = true — the LLM gets one more chance to write the code
               break;
