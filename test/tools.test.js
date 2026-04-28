@@ -246,6 +246,40 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
+    it('does NOT repair template literals with ${} interpolation containing quotes (the recipe-app bug)', async () => {
+      // This simulates the EXACT recipe-app failure scenario:
+      // A template literal with ${} interpolation that contains single/double-quoted strings.
+      // The fixSingle/fixDouble regexes must NOT match across template literal boundaries.
+      const content = [
+        "const prompt = `",
+        "You are a recipe suggestion bot.",
+        `Today's date: \${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+        "",
+        "Recipe:`;",
+        "",
+        "const options = {",
+        "  method: 'POST',",
+        "  headers: {",
+        "    'Content-Type': 'application/json',",
+        "  },",
+        "};",
+      ].join('\n');
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('write_file', {
+        path: 'my-app/app.js',
+        content,
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'my-app', 'app.js'), 'utf-8');
+      // The content should remain unchanged — template literals with actual newlines are valid JS
+      assert.equal(written, content);
+      // Verify the file is valid JavaScript
+      const { execSync } = await import('node:child_process');
+      const syntaxCheck = execSync(`node --check "${join(dir, 'my-app', 'app.js')}" 2>&1`, { encoding: 'utf-8' });
+      assert.equal(syntaxCheck.trim(), '');
+      cleanup(dir);
+    });
+
     it('does NOT repair non-JS files', async () => {
       const brokenContent = 'console.log("Adding a fish...\n");';
       const { dir, engine } = createTestWorkspace();

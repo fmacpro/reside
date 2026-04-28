@@ -228,8 +228,62 @@ export class ToolEngine {
         // then replacing all literal newlines inside with \n.
         // This handles both simple cases (one broken newline) and multi-line strings
         // (multiple broken newlines like "Line 1\nLine 2\nLine 3\n").
+        //
+        // IMPORTANT: fixSingle and fixDouble must NOT match across template literal boundaries.
+        // Template literals (`...`) can contain single/double quotes inside ${} expressions,
+        // e.g.: `Hello ${name('world')}` — the 'world' is inside a template literal.
+        // If fixSingle matches the ' in 'world' with a ' outside the template literal,
+        // it will "repair" legitimate newlines in the template literal content, corrupting the file.
+        // Solution: split content into template-literal and non-template-literal segments,
+        // apply fixSingle/fixDouble only to non-template-literal segments.
         let fixedContent = String(content);
         if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(path)) {
+          // Split content into segments: template literal parts and non-template-literal parts.
+          // Template literals are delimited by backticks (`...`).
+          // We need to handle nested backticks inside ${} expressions.
+          const splitIntoSegments = (str) => {
+            const segments = [];
+            let i = 0;
+            let current = '';
+            let depth = 0; // Track nesting depth of ${...} inside template literals
+            
+            while (i < str.length) {
+              if (str[i] === '`' && depth === 0) {
+                // Start of a template literal — flush current non-template segment
+                if (current) {
+                  segments.push({ type: 'code', content: current });
+                  current = '';
+                }
+                // Find the matching closing backtick, accounting for ${...} nesting
+                let j = i + 1;
+                let tplDepth = 0;
+                while (j < str.length) {
+                  if (str[j] === '`' && tplDepth === 0) {
+                    break;
+                  } else if (str[j] === '$' && j + 1 < str.length && str[j + 1] === '{') {
+                    tplDepth++;
+                    j += 2;
+                  } else if (str[j] === '}' && tplDepth > 0) {
+                    tplDepth--;
+                    j++;
+                  } else {
+                    j++;
+                  }
+                }
+                const tplContent = str.slice(i, j + 1); // Include both backticks
+                segments.push({ type: 'template', content: tplContent });
+                i = j + 1;
+              } else {
+                current += str[i];
+                i++;
+              }
+            }
+            if (current) {
+              segments.push({ type: 'code', content: current });
+            }
+            return segments;
+          };
+
           // For double-quoted strings: match "..." and replace \n inside with \\n
           const fixDouble = (str) => str.replace(/"([^"]*)"/g, (m) => m.replace(/\n/g, '\\n'));
           // For single-quoted strings: match '...' and replace \n inside with \\n
@@ -238,11 +292,28 @@ export class ToolEngine {
           // (indicating a broken template literal, not a legitimate multi-line one).
           // Legitimate multi-line template literals (with actual newlines) should NOT be repaired.
           const fixTemplate = (str) => str.replace(/(`[^`\n]*?)\n(\s*`[^`\n]*)/g, (m, b, a) => a.trimStart().startsWith('`') ? b + '\\n' + a.trimStart() : m);
+
+          // Apply repairs iteratively until stable
           let prev;
           do {
             prev = fixedContent;
-            fixedContent = fixDouble(fixedContent);
-            fixedContent = fixSingle(fixedContent);
+
+            // Split into segments, apply fixSingle/fixDouble only to code segments
+            const segments = splitIntoSegments(fixedContent);
+            let rebuilt = '';
+            for (const seg of segments) {
+              if (seg.type === 'template') {
+                rebuilt += seg.content; // Template literals are left untouched
+              } else {
+                let code = seg.content;
+                code = fixDouble(code);
+                code = fixSingle(code);
+                rebuilt += code;
+              }
+            }
+            fixedContent = rebuilt;
+
+            // Apply fixTemplate on the whole content (it only matches broken template literals)
             fixedContent = fixTemplate(fixedContent);
           } while (fixedContent !== prev);
         }
@@ -303,17 +374,55 @@ export class ToolEngine {
         // Fix broken string literals in the new content (same as write_file)
         let fixedNewString = String(new_string);
         if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(path)) {
-          // For double-quoted strings: match "..." and replace \n inside with \\n
+          // Split content into segments: template literal parts and non-template-literal parts.
+          const splitIntoSegments = (str) => {
+            const segments = [];
+            let i = 0;
+            let current = '';
+            while (i < str.length) {
+              if (str[i] === '`') {
+                if (current) {
+                  segments.push({ type: 'code', content: current });
+                  current = '';
+                }
+                let j = i + 1;
+                let tplDepth = 0;
+                while (j < str.length) {
+                  if (str[j] === '`' && tplDepth === 0) break;
+                  else if (str[j] === '$' && j + 1 < str.length && str[j + 1] === '{') { tplDepth++; j += 2; }
+                  else if (str[j] === '}' && tplDepth > 0) { tplDepth--; j++; }
+                  else { j++; }
+                }
+                segments.push({ type: 'template', content: str.slice(i, j + 1) });
+                i = j + 1;
+              } else {
+                current += str[i];
+                i++;
+              }
+            }
+            if (current) segments.push({ type: 'code', content: current });
+            return segments;
+          };
+
           const fixDouble = (str) => str.replace(/"([^"]*)"/g, (m) => m.replace(/\n/g, '\\n'));
-          // For single-quoted strings: match '...' and replace \n inside with \\n
           const fixSingle = (str) => str.replace(/'([^']*)'/g, (m) => m.replace(/\n/g, '\\n'));
-          // For template literals: only repair when the continuation starts with a backtick
           const fixTemplate = (str) => str.replace(/(`[^`\n]*?)\n(\s*`[^`\n]*)/g, (m, b, a) => a.trimStart().startsWith('`') ? b + '\\n' + a.trimStart() : m);
           let prev;
           do {
             prev = fixedNewString;
-            fixedNewString = fixDouble(fixedNewString);
-            fixedNewString = fixSingle(fixedNewString);
+            const segments = splitIntoSegments(fixedNewString);
+            let rebuilt = '';
+            for (const seg of segments) {
+              if (seg.type === 'template') {
+                rebuilt += seg.content;
+              } else {
+                let code = seg.content;
+                code = fixDouble(code);
+                code = fixSingle(code);
+                rebuilt += code;
+              }
+            }
+            fixedNewString = rebuilt;
             fixedNewString = fixTemplate(fixedNewString);
           } while (fixedNewString !== prev);
         }
