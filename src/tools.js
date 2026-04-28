@@ -198,10 +198,19 @@ export class ToolEngine {
           };
         }
 
+        // Detect when the LLM writes package.json using CommonJS module.exports syntax
+        // instead of plain JSON. This happens when the LLM is confused about ESM vs CJS.
+        const contentStr = String(content).trim();
+        if (path.endsWith('package.json') && contentStr.startsWith('module.exports')) {
+          return {
+            success: false,
+            error: `The content for "${path}" uses CommonJS "module.exports" syntax, but package.json must be plain JSON. Write the content as a valid JSON object, e.g.:\n{\n  "name": "my-app",\n  "version": "1.0.0",\n  "type": "module"\n}`,
+          };
+        }
+
         // Detect placeholder/stub content — the LLM should write real code, not placeholders.
         // Common patterns: "// Your code here", "// TODO", "function main() { }" (empty body),
         // or very short files that are clearly stubs.
-        const contentStr = String(content).trim();
         const placeholderPatterns = [
           /^\/\/\s*(your|todo|placeholder|insert|add|implement|write|put|fill)[^]*$/im,
           /^\/\*\s*(your|todo|placeholder|insert|add|implement|write|put|fill)[^]*\*\/$/im,
@@ -245,10 +254,9 @@ export class ToolEngine {
             const segments = [];
             let i = 0;
             let current = '';
-            let depth = 0; // Track nesting depth of ${...} inside template literals
             
             while (i < str.length) {
-              if (str[i] === '`' && depth === 0) {
+              if (str[i] === '`') {
                 // Start of a template literal — flush current non-template segment
                 if (current) {
                   segments.push({ type: 'code', content: current });
@@ -257,6 +265,8 @@ export class ToolEngine {
                 // Find the matching closing backtick, accounting for ${...} nesting
                 let j = i + 1;
                 let tplDepth = 0;
+                let newlineCount = 0;
+                let mismatched = false;
                 while (j < str.length) {
                   if (str[j] === '`' && tplDepth === 0) {
                     break;
@@ -267,12 +277,31 @@ export class ToolEngine {
                     tplDepth--;
                     j++;
                   } else {
+                    if (str[j] === '\n') newlineCount++;
+                    // Safety: if a template literal spans more than 20 lines, it's likely
+                    // a mismatched quote (e.g., the LLM wrote `... with a " instead of `).
+                    // Treat the opening backtick as a regular character and continue.
+                    if (newlineCount > 20) {
+                      mismatched = true;
+                      break;
+                    }
                     j++;
                   }
                 }
-                const tplContent = str.slice(i, j + 1); // Include both backticks
-                segments.push({ type: 'template', content: tplContent });
-                i = j + 1;
+                if (mismatched) {
+                  // Treat the opening backtick as a regular character
+                  current += '`';
+                  i++;
+                } else if (j < str.length && str[j] === '`') {
+                  // Found a closing backtick — create template segment
+                  const tplContent = str.slice(i, j + 1);
+                  segments.push({ type: 'template', content: tplContent });
+                  i = j + 1;
+                } else {
+                  // No closing backtick found — treat as regular character
+                  current += '`';
+                  i++;
+                }
               } else {
                 current += str[i];
                 i++;
@@ -387,14 +416,36 @@ export class ToolEngine {
                 }
                 let j = i + 1;
                 let tplDepth = 0;
+                let newlineCount = 0;
+                let mismatched = false;
                 while (j < str.length) {
                   if (str[j] === '`' && tplDepth === 0) break;
                   else if (str[j] === '$' && j + 1 < str.length && str[j + 1] === '{') { tplDepth++; j += 2; }
                   else if (str[j] === '}' && tplDepth > 0) { tplDepth--; j++; }
-                  else { j++; }
+                  else {
+                    if (str[j] === '\n') newlineCount++;
+                    // Safety: if a template literal spans more than 20 lines, it's likely
+                    // a mismatched quote (e.g., the LLM wrote `... with a " instead of `).
+                    // Treat the opening backtick as a regular character and continue.
+                    if (newlineCount > 20) {
+                      mismatched = true;
+                      break;
+                    }
+                    j++;
+                  }
                 }
-                segments.push({ type: 'template', content: str.slice(i, j + 1) });
-                i = j + 1;
+                if (mismatched) {
+                  // Treat the opening backtick as a regular character
+                  current += '`';
+                  i++;
+                } else if (j < str.length && str[j] === '`') {
+                  segments.push({ type: 'template', content: str.slice(i, j + 1) });
+                  i = j + 1;
+                } else {
+                  // No closing backtick found — treat as regular character
+                  current += '`';
+                  i++;
+                }
               } else {
                 current += str[i];
                 i++;
@@ -497,6 +548,19 @@ export class ToolEngine {
           if (command.includes(pattern)) {
             return { success: false, error: 'Command blocked for security: contains dangerous pattern' };
           }
+        }
+
+        // Detect shell redirect syntax in command arguments — the LLM often uses
+        // <placeholder> syntax (e.g., "node app.js <city-name>") which the shell
+        // interprets as a file redirect, causing a syntax error.
+        // This catches angle brackets that look like shell redirects (not math comparisons).
+        const shellRedirectPattern = /<[a-zA-Z][a-zA-Z0-9_-]*>/;
+        if (shellRedirectPattern.test(command)) {
+          return {
+            success: false,
+            error: `The command "${command}" contains angle brackets like "<...>" which the shell interprets as file redirects. Replace "<placeholder>" with an actual value (e.g., a real city name like "London") instead of using placeholder syntax.`,
+            data: { exitCode: null, stdout: '', stderr: '' },
+          };
         }
 
         // Resolve working directory: use cwd if provided, otherwise workspace root.
@@ -843,18 +907,32 @@ export class ToolEngine {
                 const fileRefMatch = command.match(/(?:node|python3?|deno|bun)\s+(\S+\.\w+)/);
                 if (fileRefMatch) {
                   const referencedFile = fileRefMatch[1];
+                  // Search app subdirectories for this file, preferring the most recently
+                  // modified app (by mtime) — the LLM is most likely working on the app
+                  // it just created/modified.
                   const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
                     .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+                  let bestApp = null;
+                  let latestMtime = 0;
                   for (const app of apps) {
                     const appFilePath = join(this.workspaceDir, app.name, referencedFile);
                     if (existsSync(appFilePath)) {
-                      resolve({
-                        success: false,
-                        error: `The command "${command}" timed out after 5s because it ran in the workdir root instead of inside the app directory.\n\n💡 Hint: The file "${referencedFile}" exists in the "${app.name}/" directory. You likely forgot to set cwd="${app.name}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${app.name}"})`,
-                        data: { exitCode: null, timedOut: true, stdout, stderr },
-                      });
-                      return;
+                      try {
+                        const stat = statSync(join(this.workspaceDir, app.name));
+                        if (stat.mtimeMs > latestMtime) {
+                          latestMtime = stat.mtimeMs;
+                          bestApp = app.name;
+                        }
+                      } catch {}
                     }
+                  }
+                  if (bestApp) {
+                    resolve({
+                      success: false,
+                      error: `The command "${command}" timed out after 5s because it ran in the workdir root instead of inside the app directory.\n\n💡 Hint: The file "${referencedFile}" exists in the "${bestApp}/" directory. You likely forgot to set cwd="${bestApp}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${bestApp}"})`,
+                      data: { exitCode: null, timedOut: true, stdout, stderr },
+                    });
+                    return;
                   }
                 }
               }
@@ -956,15 +1034,27 @@ export class ToolEngine {
                 const fileRefMatch = command.match(/(?:node|python3?|deno|bun)\s+(\S+\.\w+)/);
                 if (fileRefMatch) {
                   const referencedFile = fileRefMatch[1];
-                  // Search app subdirectories for this file
+                  // Search app subdirectories for this file, preferring the most recently
+                  // modified app (by mtime) — the LLM is most likely working on the app
+                  // it just created/modified.
                   const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
                     .filter(d => d.isDirectory() && !d.name.startsWith('.'));
+                  let bestApp = null;
+                  let latestMtime = 0;
                   for (const app of apps) {
                     const appFilePath = join(this.workspaceDir, app.name, referencedFile);
                     if (existsSync(appFilePath)) {
-                      cwdHint = `\n\n💡 Hint: The file "${referencedFile}" exists in the "${app.name}/" directory. You likely forgot to set cwd="${app.name}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${app.name}"})`;
-                      break;
+                      try {
+                        const stat = statSync(join(this.workspaceDir, app.name));
+                        if (stat.mtimeMs > latestMtime) {
+                          latestMtime = stat.mtimeMs;
+                          bestApp = app.name;
+                        }
+                      } catch {}
                     }
+                  }
+                  if (bestApp) {
+                    cwdHint = `\n\n💡 Hint: The file "${referencedFile}" exists in the "${bestApp}/" directory. You likely forgot to set cwd="${bestApp}" in your execute_command call. Try: execute_command({"command":"${command}","cwd":"${bestApp}"})`;
                   }
                 }
               }

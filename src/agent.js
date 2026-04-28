@@ -161,11 +161,40 @@ export class Agent {
     // counts files with executable code extensions.
     this._hasWrittenCodeFile = false;
 
+    // Track whether a recognized entry point file (e.g., app.js, index.js,
+    // server.js, main.py) has been written. The LLM often writes helper
+    // modules first (e.g., recipes.js, routes.js) and creates the entry
+    // point last. Using this flag instead of _hasWrittenCodeFile ensures
+    // proactive guidance and finish() interception don't stop firing until
+    // the actual entry point is created.
+    this._hasWrittenEntryPoint = false;
+
+    // Recognized entry point filenames — the LLM must write one of these
+    // before proactive guidance and finish() interception stop firing.
+    this._entryPointNames = new Set([
+      'app.js', 'index.js', 'server.js', 'main.js',
+      'app.ts', 'index.ts', 'server.ts', 'main.ts',
+      'app.py', 'main.py',
+      'app.rb', 'main.rb',
+      'app.go', 'main.go',
+      'app.rs', 'main.rs',
+      'index.php',
+      'app.mjs', 'index.mjs',
+      'app.cjs', 'index.cjs',
+    ]);
+
     // Track how many times finish() has been intercepted without source files.
     // After the first interception, if the LLM calls finish() again without
     // writing source files, force-end the session — the LLM has proven it
     // won't follow the guidance to write code.
     this._finishWithoutSourceCount = 0;
+
+    // Track how many times a runtime error has been intercepted for the same
+    // run command. After the first interception with guidance, if the LLM
+    // retries the same failing command instead of fixing the code, force-end
+    // the session — the LLM is stuck in a retry loop.
+    this._runtimeErrorCount = 0;
+    this._lastRunCommand = '';
 
   }
 
@@ -413,6 +442,14 @@ export class Agent {
             const codeExtensions = /\.(js|ts|jsx|tsx|py|rb|php|go|rs|c|cpp|java|mjs|cjs)$/i;
             if (codeExtensions.test(filePath)) {
               this._hasWrittenCodeFile = true;
+              // Check if this is a recognized entry point file (e.g., app.js, index.js).
+              // The LLM often writes helper modules first (e.g., recipes.js, routes.js)
+              // and creates the entry point last. We only stop proactive guidance and
+              // finish() interception when an entry point is detected.
+              const fileName = filePath.split('/').pop();
+              if (this._entryPointNames.has(fileName)) {
+                this._hasWrittenEntryPoint = true;
+              }
             }
           }
 
@@ -422,7 +459,7 @@ export class Agent {
           // guidance is injected BEFORE the LLM's next turn to prevent that.
           if (tc.tool === 'execute_command') {
             const cmd = tc.arguments?.command || '';
-            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenCodeFile) {
+            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenEntryPoint) {
               this.messages.push({
                 role: 'system',
                 content: 'Dependencies installed successfully. Now you MUST write the main application entry point file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. This file should contain the actual application logic (routes, handlers, etc.) — not just data files like .json. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the main code file first.',
@@ -556,6 +593,14 @@ export class Agent {
                 guidance: 'The source file does not exist. You forgot to write it! You MUST use write_file() to create the source file BEFORE running it. Do NOT retry the run command — write the source file first.',
               },
               {
+                pattern: /require is not defined in ES module scope/i,
+                guidance: 'The project uses ES modules ("type": "module" in package.json), which do NOT support require(). You MUST use import/export syntax instead. To fix this: (1) Replace require() calls with import statements, e.g., import axios from "axios"; instead of const axios = require("axios"); (2) If you need require() for some packages, use createRequire: import { createRequire } from "node:module"; const require = createRequire(import.meta.url); (3) For JSON file imports, use: import data from "./file.json" with { type: "json" }; Do NOT edit package.json to remove "type": "module" — that is the wrong fix. Adapt the code to use ESM syntax instead.',
+              },
+              {
+                pattern: /ERR_IMPORT_ATTRIBUTE_MISSING/i,
+                guidance: 'Node.js v24 requires the "with { type: \'json\' }" assertion when importing JSON files in ES modules. To fix this, add the assertion to your import statement: import data from "./file.json" with { type: "json" }; Do NOT remove "type": "module" from package.json — that is the wrong fix. Just add the assertion to the import statement.',
+              },
+              {
                 pattern: /^(TypeError|ReferenceError|SyntaxError|RangeError|URIError):/m,
                 guidance: 'The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.',
               },
@@ -563,6 +608,33 @@ export class Agent {
 
             const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
             if (matchedError) {
+              // Track repeated runtime errors for the same command to prevent
+              // the LLM from retrying the same failing command instead of fixing the code.
+              // The LLM often ignores the guidance and retries the exact same command.
+              if (cmd === this._lastRunCommand) {
+                this._runtimeErrorCount++;
+              } else {
+                this._runtimeErrorCount = 1;
+                this._lastRunCommand = cmd;
+              }
+
+              // If the LLM has already been told to fix the code and is retrying
+              // the same command, force-end the session — the LLM is stuck.
+              if (this._runtimeErrorCount >= 2) {
+                console.log('   ⚠️ LLM retried the same failing command after guidance — ending session.');
+                this.messages.push({
+                  role: 'tool',
+                  content: JSON.stringify({
+                    tool: tc.tool,
+                    arguments: tc.arguments,
+                    result: 'error',
+                    output: `Error: ${result.error}`,
+                  }),
+                });
+                finished = true;
+                break;
+              }
+
               this.messages.push({
                 role: 'tool',
                 content: JSON.stringify({
@@ -605,20 +677,20 @@ export class Agent {
           });
 
           if (tc.tool === 'finish') {
-            // If the LLM calls finish() without ever writing any code source files
-            // (e.g., .js, .ts, .py), intercept it and inject guidance instead of
-            // ending the session. The LLM often searches the web, installs deps,
-            // or writes data files like .json, then calls finish() without writing
-            // the actual application code.
-            if (!this._hasWrittenCodeFile) {
+            // If the LLM calls finish() without ever writing a recognized entry
+            // point file (e.g., app.js, index.js, server.js), intercept it and
+            // inject guidance instead of ending the session. The LLM often writes
+            // helper modules (e.g., recipes.js, routes.js) or data files (.json),
+            // then calls finish() without writing the actual entry point.
+            if (!this._hasWrittenEntryPoint) {
               this._finishWithoutSourceCount++;
-              console.log(`   ⚠️ finish() called but no code files were written — intercepting (#${this._finishWithoutSourceCount})`);
+              console.log(`   ⚠️ finish() called but no entry point file was written — intercepting (#${this._finishWithoutSourceCount})`);
 
-              // If the LLM has already been told to write code files and is
+              // If the LLM has already been told to write the entry point and is
               // calling finish() again, force-end the session. The LLM has proven
               // it won't follow the guidance.
               if (this._finishWithoutSourceCount >= 2) {
-                console.log('   ⚠️ LLM repeatedly called finish() without writing code files — ending session.');
+                console.log('   ⚠️ LLM repeatedly called finish() without writing an entry point — ending session.');
                 finished = true;
                 break;
               }
@@ -629,12 +701,12 @@ export class Agent {
                   tool: tc.tool,
                   arguments: tc.arguments,
                   result: 'error',
-                  output: 'Error: You called finish() but never wrote any application code files. Writing data files like .json is not enough — you MUST use write_file() to create the main application entry point (e.g., app.js, index.js) with the actual logic before calling finish().',
+                  output: 'Error: You called finish() but never wrote the main application entry point file (e.g., app.js, index.js, server.js). Writing helper modules or data files like .json is not enough — you MUST use write_file() to create the entry point with the actual application logic before calling finish().',
                 }),
               });
               this.messages.push({
                 role: 'system',
-                content: 'You called finish() without writing any application code files. Writing data files like .json is not enough. You MUST write the main application entry point (e.g., app.js, index.js) with the actual application logic using write_file() before calling finish(). Do NOT call finish() again until you have created the code file.',
+                content: 'You called finish() without writing the main application entry point file (e.g., app.js, index.js, server.js). Writing helper modules or data files like .json is not enough. You MUST write the entry point file with the actual application logic using write_file() before calling finish(). Do NOT call finish() again until you have created the entry point. Also, do NOT try to run the app (e.g., "node app.js") before writing the file — the file does not exist yet. Write the file first, then run it.',
               });
               // Do NOT set finished = true — the LLM gets one more chance to write the code
               break;
