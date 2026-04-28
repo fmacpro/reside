@@ -16,7 +16,82 @@ const CONFIG_PATH = join(CONFIG_DIR, 'config.json');
  * @property {boolean} fetchUseBrowser - Default to browser (Puppeteer) for all fetch_url calls
  * @property {boolean} debugMode - Enable verbose debug output (full raw LLM responses, intermediate logs)
  * @property {string} systemPrompt - Custom system prompt template
+ * @property {Object<string, ModelSettings>} modelConfigs - Per-model overrides for generation parameters
  */
+
+/**
+ * Per-model generation settings.
+ * @typedef {Object} ModelSettings
+ * @property {number} [maxTokens] - Maximum tokens in the response (maps to num_predict in Ollama)
+ * @property {number} [temperature] - Sampling temperature (0.0 - 2.0)
+ * @property {number} [topP] - Nucleus sampling threshold (0.0 - 1.0)
+ * @property {number} [topK] - Top-K sampling
+ * @property {number} [repeatPenalty] - Repeat penalty
+ * @property {number} [numCtx] - Context window size
+ */
+
+/**
+ * Sensible defaults for known models.
+ * Keys are model name prefixes (matched via startsWith).
+ * The first matching prefix wins, so list more specific names first.
+ */
+const MODEL_PRESETS = [
+  {
+    // qwen3 models (qwen3:latest, qwen3.5:latest, etc.)
+    match: (name) => /^qwen3/i.test(name),
+    config: { maxTokens: 16384, temperature: 0.1, numCtx: 32768 },
+  },
+  {
+    // qwen2.5-coder models
+    match: (name) => /^qwen2\.5-coder/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // qwen2.5 models
+    match: (name) => /^qwen2\.5/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // deepseek-coder models
+    match: (name) => /^deepseek/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // codellama models
+    match: (name) => /^codellama/i.test(name),
+    config: { maxTokens: 4096, temperature: 0.1, numCtx: 16384 },
+  },
+  {
+    // llama3 / llama3.1 / llama3.2 models
+    match: (name) => /^llama3/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // mistral / mixtral models
+    match: (name) => /^mistr/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // phi models
+    match: (name) => /^phi/i.test(name),
+    config: { maxTokens: 4096, temperature: 0.1, numCtx: 4096 },
+  },
+  {
+    // gemma models
+    match: (name) => /^gemma/i.test(name),
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // starcoder models
+    match: (name) => /^starcoder/i.test(name),
+    config: { maxTokens: 4096, temperature: 0.1, numCtx: 8192 },
+  },
+  {
+    // Default fallback for any other model
+    match: () => true,
+    config: { maxTokens: 8192, temperature: 0.1, numCtx: 8192 },
+  },
+];
 
 const DEFAULT_CONFIG = {
   ollamaHost: 'http://localhost:11434',
@@ -26,6 +101,10 @@ const DEFAULT_CONFIG = {
   autoCommit: true,
   fetchUseBrowser: false,
   debugMode: false,
+  // Per-model generation parameter overrides.
+  // Keys are model names (exact match). Values override the preset defaults.
+  // Example: { "qwen2.5-coder:7b": { maxTokens: 16384, temperature: 0.2 } }
+  modelConfigs: {},
   systemPrompt: `You are Reside, an AI coding assistant with direct filesystem access.
 You are in a conversational session - the user will give you tasks and ask follow-up questions.
 
@@ -92,6 +171,41 @@ CRITICAL RULES:
 Each app directory gets its own git repository automatically when created via create_directory.
 Prefer Node.js for apps unless the user specifies otherwise.`,
 };
+
+/**
+ * Resolve model-specific generation settings for a given model name.
+ *
+ * Priority (highest wins):
+ * 1. Environment variables (RESIDE_MAX_TOKENS, RESIDE_TEMPERATURE, etc.)
+ * 2. Per-model overrides in config.modelConfigs (exact match on model name)
+ * 3. Model preset matching (by name prefix/pattern)
+ * 4. Global defaults (the fallback preset)
+ *
+ * @param {string} modelName - The model name (e.g., "qwen2.5-coder:7b")
+ * @param {ResideConfig} config - The full resolved config
+ * @returns {ModelSettings}
+ */
+export function getModelConfig(modelName, config) {
+  // Start with the fallback preset
+  const fallbackPreset = MODEL_PRESETS.find(p => p.match(''))?.config || {};
+  const preset = MODEL_PRESETS.find(p => p.match(modelName))?.config || fallbackPreset;
+  const result = { ...preset };
+
+  // Apply per-model overrides from config.modelConfigs (exact match)
+  if (config.modelConfigs && config.modelConfigs[modelName]) {
+    Object.assign(result, config.modelConfigs[modelName]);
+  }
+
+  // Environment variables override everything
+  if (process.env.RESIDE_MAX_TOKENS) result.maxTokens = parseInt(process.env.RESIDE_MAX_TOKENS, 10);
+  if (process.env.RESIDE_TEMPERATURE) result.temperature = parseFloat(process.env.RESIDE_TEMPERATURE);
+  if (process.env.RESIDE_TOP_P) result.topP = parseFloat(process.env.RESIDE_TOP_P);
+  if (process.env.RESIDE_TOP_K) result.topK = parseInt(process.env.RESIDE_TOP_K, 10);
+  if (process.env.RESIDE_REPEAT_PENALTY) result.repeatPenalty = parseFloat(process.env.RESIDE_REPEAT_PENALTY);
+  if (process.env.RESIDE_NUM_CTX) result.numCtx = parseInt(process.env.RESIDE_NUM_CTX, 10);
+
+  return result;
+}
 
 /**
  * Load configuration, merging with defaults.

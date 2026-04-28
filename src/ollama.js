@@ -33,6 +33,10 @@ export class OllamaClient {
    * @param {object} [options]
    * @param {number} [options.temperature]
    * @param {number} [options.maxTokens]
+   * @param {number} [options.topP]
+   * @param {number} [options.topK]
+   * @param {number} [options.repeatPenalty]
+   * @param {number} [options.numCtx]
    * @returns {Promise<OllamaResponse>}
    */
   chat(model, messages, options = {}) {
@@ -45,6 +49,10 @@ export class OllamaClient {
 
     if (options.temperature !== undefined) body.options.temperature = options.temperature;
     if (options.maxTokens !== undefined) body.options.num_predict = options.maxTokens;
+    if (options.topP !== undefined) body.options.top_p = options.topP;
+    if (options.topK !== undefined) body.options.top_k = options.topK;
+    if (options.repeatPenalty !== undefined) body.options.repeat_penalty = options.repeatPenalty;
+    if (options.numCtx !== undefined) body.options.num_ctx = options.numCtx;
 
     return this._post('/api/chat', body);
   }

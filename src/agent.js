@@ -2,6 +2,7 @@ import { OllamaClient } from './ollama.js';
 import { ToolEngine } from './tools.js';
 import { WorkspaceManager } from './workspace.js';
 import { parseToolCalls } from './parser.js';
+import { getModelConfig } from './config.js';
 
 /**
  * Convert markdown links `[text](url)` to plain `url` in text output.
@@ -281,15 +282,18 @@ export class Agent {
 
       let response;
       try {
-        response = await this.ollama.chat(this.config.model, this.messages, {
-          temperature: 0.1,
-          // Set a generous token limit (8192) to prevent the model from being
-          // truncated mid-response. The LLM often writes long code files with
-          // JSON tool calls in a single response, and a low token limit would
-          // truncate the JSON mid-parse, causing the tool call to fail silently.
-          // The agent loop's maxIterations already prevents runaway generation.
-          maxTokens: 8192,
-        });
+        // Resolve model-specific generation settings from config.
+        // Falls back to sensible defaults for unknown models.
+        const modelCfg = getModelConfig(this.config.model, this.config);
+        const ollamaOptions = {};
+        if (modelCfg.maxTokens !== undefined) ollamaOptions.maxTokens = modelCfg.maxTokens;
+        if (modelCfg.temperature !== undefined) ollamaOptions.temperature = modelCfg.temperature;
+        if (modelCfg.topP !== undefined) ollamaOptions.topP = modelCfg.topP;
+        if (modelCfg.topK !== undefined) ollamaOptions.topK = modelCfg.topK;
+        if (modelCfg.repeatPenalty !== undefined) ollamaOptions.repeatPenalty = modelCfg.repeatPenalty;
+        if (modelCfg.numCtx !== undefined) ollamaOptions.numCtx = modelCfg.numCtx;
+
+        response = await this.ollama.chat(this.config.model, this.messages, ollamaOptions);
       } catch (err) {
         console.error(`\n❌ Model request failed: ${err.message}`);
         console.log('   Make sure Ollama is running and the model is available.');

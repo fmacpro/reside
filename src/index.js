@@ -35,6 +35,21 @@ CONFIGURATION:
   Environment variables: RESIDE_MODEL, RESIDE_WORKDIR, RESIDE_OLLAMA_HOST
 `;
 
+/**
+ * Coerce a string value to its appropriate type (number, boolean, or string).
+ * Used by --set to handle values like "8192" -> 8192, "true" -> true.
+ */
+function coerceValue(value) {
+  // Try number
+  const num = Number(value);
+  if (!Number.isNaN(num) && value.trim() !== '') return num;
+  // Try boolean
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  // Keep as string
+  return value;
+}
+
 async function main() {
   const args = process.argv.slice(2);
 
@@ -88,7 +103,26 @@ async function main() {
         const key = args[++i];
         const value = args[++i];
         if (key && value) {
-          saveConfig({ [key]: value });
+          // Support nested keys like "modelConfigs.qwen2.5-coder:7b.maxTokens"
+          // by parsing the dot-separated path and building a nested object.
+          const parts = key.split('.');
+          let configValue;
+          if (parts.length === 1) {
+            configValue = { [key]: coerceValue(value) };
+          } else {
+            // Build nested structure: { modelConfigs: { "qwen2.5-coder:7b": { maxTokens: 8192 } } }
+            configValue = {};
+            let current = configValue;
+            for (let p = 0; p < parts.length; p++) {
+              if (p === parts.length - 1) {
+                current[parts[p]] = coerceValue(value);
+              } else {
+                current[parts[p]] = {};
+                current = current[parts[p]];
+              }
+            }
+          }
+          saveConfig(configValue);
           console.log(`Set config: ${key} = ${value}`);
         } else {
           console.error('Usage: reside --set <key> <value>');
