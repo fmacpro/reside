@@ -202,19 +202,6 @@ The `search_web(query)` tool uses [DuckDuckGo](https://html.duckduckgo.com/html/
 
 **How the LLM uses it:**
 ```
-💬 > What's the latest version of Node.js?
-
-🤖 Let me search for that...
-
-🔧 search_web({"query":"latest Node.js version 2026"})
-   ✅ Found 3 results
-
-🤖 The latest LTS version of Node.js is 22.x...
-```
-
-**Chat examples:**
-
-```
 💬 > what is the current price of bitcoin
 
 🔧 search_web("current price of bitcoin")
