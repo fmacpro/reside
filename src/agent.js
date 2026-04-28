@@ -521,6 +521,10 @@ export class Agent {
                 pattern: /MODULE_NOT_FOUND/i,
                 guidance: 'The source file does not exist. You forgot to write it! You MUST use write_file() to create the source file BEFORE running it. Do NOT retry the run command — write the source file first.',
               },
+              {
+                pattern: /^(TypeError|ReferenceError|SyntaxError|RangeError|URIError):/m,
+                guidance: 'The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.',
+              },
             ];
 
             const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
