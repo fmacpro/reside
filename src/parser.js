@@ -74,7 +74,27 @@ export function parseToolCalls(content) {
     result.toolCalls = [];
     lastIndex = 0;
 
-    // Match top-level JSON objects or arrays
+    // First, try parsing the ENTIRE content as a single JSON tool call.
+    // This handles cases where the LLM outputs nothing but a JSON object
+    // with deeply nested content strings (e.g., write_file with JS code
+    // containing many levels of braces that would break the regex below).
+    const trimmedContent = content.trim();
+    if (trimmedContent.startsWith('{') || trimmedContent.startsWith('[')) {
+      const fullParsed = tryParseJson(trimmedContent);
+      if (fullParsed) {
+        const calls = extractToolCalls(fullParsed);
+        if (calls.length > 0) {
+          result.toolCalls.push(...calls);
+          result.text = '';
+          return result;
+        }
+      }
+    }
+
+    // Fallback: Match top-level JSON objects or arrays using regex.
+    // This regex handles up to 3 levels of nesting, which is sufficient
+    // for most tool calls (e.g., write_file with simple content).
+    // For deeply nested content, the full-content parse above handles it.
     const jsonRegex = /(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}|\[(?:[^\[\]]|(?:\[(?:[^\[\]]|(?:\[[^\[\]]*\]))*\]))*\])/g;
     
     while ((match = jsonRegex.exec(content)) !== null) {
