@@ -153,7 +153,7 @@ export class ToolEngine {
         params: ['query'],
       },
       fetch_url: {
-        desc: 'Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web. Automatically falls back to a real browser (Puppeteer) if the HTTP request gets blocked (403/401). For JavaScript-heavy pages, set useBrowser=true to force browser rendering.',
+        desc: 'Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this ONLY when the user explicitly asks for the full text of a specific article or page. Do NOT call fetch_url() on URLs returned by search_web() — search_web() already fetches article content and returns summaries. Automatically falls back to a real browser (Puppeteer) if the HTTP request gets blocked (403/401). For JavaScript-heavy pages, set useBrowser=true to force browser rendering.',
         params: ['url', 'useBrowser?'],
       },
       get_current_time: {
@@ -1175,6 +1175,30 @@ export class ToolEngine {
       fetch_url: async ({ url, useBrowser }) => {
         if (!url) return { success: false, error: 'Missing required argument: url' };
 
+        // Normalize the URL: strip surrounding whitespace, angle brackets, or markdown link syntax
+        // that the LLM might have accidentally included.
+        let normalizedUrl = String(url).trim();
+        // Remove surrounding angle brackets: <url> -> url
+        normalizedUrl = normalizedUrl.replace(/^<(https?:\/\/[^>]+)>$/, '$1');
+        // Remove surrounding square brackets: [url] -> url
+        normalizedUrl = normalizedUrl.replace(/^\[(https?:\/\/[^\]]+)\]$/, '$1');
+        // Remove trailing punctuation that might have been included accidentally
+        normalizedUrl = normalizedUrl.replace(/[.,;:!?]+$/, '');
+
+        // Validate the URL
+        try {
+          const parsed = new URL(normalizedUrl);
+          if (!['http:', 'https:'].includes(parsed.protocol)) {
+            return { success: false, error: `Invalid URL protocol: "${parsed.protocol}". Only http and https URLs are supported. The URL was: "${url}"` };
+          }
+        } catch {
+          return {
+            success: false,
+            error: `Invalid URL format: "${url}". Make sure to use a complete URL starting with https://. If you got this URL from search_web(), copy the exact URL from the search results output — do NOT use template syntax like {{search_results[0].url}}.`,
+            data: { url },
+          };
+        }
+
         // Use config default if useBrowser not explicitly provided by the LLM
         if (useBrowser === undefined || useBrowser === null) {
           useBrowser = this.config.fetchUseBrowser === true;
@@ -1184,9 +1208,9 @@ export class ToolEngine {
 
         if (useBrowser === true || useBrowser === 'true') {
           // Use Puppeteer for JavaScript-heavy pages
-          result = await fetchUrlWithBrowser(url, { debugMode: this.config.debugMode === true });
+          result = await fetchUrlWithBrowser(normalizedUrl, { debugMode: this.config.debugMode === true });
           if (!result.success) {
-            return { success: false, error: result.error, data: { url } };
+            return { success: false, error: result.error, data: { url: normalizedUrl } };
           }
           const output = [
             `─── WEB PAGE CONTENT (${result.url}) ───────────────────────────────`,
@@ -1207,7 +1231,7 @@ export class ToolEngine {
         }
 
         // Default: use the lightweight HTTP-based extractor
-        result = await fetchAndExtract(url);
+        result = await fetchAndExtract(normalizedUrl);
 
         // Automatic fallback: if HTTP fetch fails with 403/401/429 (bot protection),
         // retry with Puppeteer which can handle JavaScript challenges.
