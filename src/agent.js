@@ -402,6 +402,20 @@ export class Agent {
             this._hasWrittenSourceFile = true;
           }
 
+          // After a successful npm install, proactively guide the LLM to write
+          // source files next. The LLM often searches the web, tries to run
+          // non-existent files, or calls finish() after installing deps — this
+          // guidance is injected BEFORE the LLM's next turn to prevent that.
+          if (tc.tool === 'execute_command') {
+            const cmd = tc.arguments?.command || '';
+            if (/^npm\s+install/.test(cmd.trim()) && !this._hasWrittenSourceFile) {
+              this.messages.push({
+                role: 'system',
+                content: 'Dependencies installed successfully. Now you MUST write the application source files using write_file() before doing anything else. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the actual code files first (e.g., app.js, index.js, or whatever the app needs). Create subdirectories with create_directory() if needed, then write the source files with write_file().',
+              });
+            }
+          }
+
           if (this.config.debugMode) {
             // Debug mode: show full raw output (truncated at 500 chars)
             const outputPreview = result.output
