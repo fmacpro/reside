@@ -154,6 +154,12 @@ export class Agent {
     // Used to detect when the LLM calls finish() without writing any code.
     this._hasWrittenSourceFile = false;
 
+    // Track how many times finish() has been intercepted without source files.
+    // After the first interception, if the LLM calls finish() again without
+    // writing source files, force-end the session — the LLM has proven it
+    // won't follow the guidance to write code.
+    this._finishWithoutSourceCount = 0;
+
   }
 
   /**
@@ -576,7 +582,18 @@ export class Agent {
             // The LLM often searches the web, installs deps, then calls finish()
             // without writing the actual application code.
             if (!this._hasWrittenSourceFile) {
-              console.log('   ⚠️ finish() called but no source files were written — intercepting');
+              this._finishWithoutSourceCount++;
+              console.log(`   ⚠️ finish() called but no source files were written — intercepting (#${this._finishWithoutSourceCount})`);
+
+              // If the LLM has already been told to write source files and is
+              // calling finish() again, force-end the session. The LLM has proven
+              // it won't follow the guidance.
+              if (this._finishWithoutSourceCount >= 2) {
+                console.log('   ⚠️ LLM repeatedly called finish() without writing source files — ending session.');
+                finished = true;
+                break;
+              }
+
               this.messages.push({
                 role: 'tool',
                 content: JSON.stringify({
@@ -590,7 +607,7 @@ export class Agent {
                 role: 'system',
                 content: 'You called finish() without writing any source files. The user asked you to build an app. You MUST write the actual application code using write_file() before calling finish(). Do NOT call finish() again until you have created the source files.',
               });
-              // Do NOT set finished = true — the LLM gets another chance to write the code
+              // Do NOT set finished = true — the LLM gets one more chance to write the code
               break;
             }
             finished = true;
