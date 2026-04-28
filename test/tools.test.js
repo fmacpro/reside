@@ -280,6 +280,51 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
+    it('end-to-end: simulates the ASCII art fish.txt scenario (non-JS file should NOT be repaired)', async () => {
+      // This simulates the exact scenario from the user's prompting example:
+      // 1. LLM searches for fish ASCII art
+      // 2. LLM writes a fish.txt file with \n in the JSON content string
+      // 3. After JSON.parse, the \n becomes actual newlines
+      // 4. Since fish.txt is NOT a JS file, the content should be preserved as-is
+      const { dir, engine } = createTestWorkspace();
+
+      // Step 1: Create the app directory
+      await engine.execute('create_directory', { path: 'fish-app' });
+
+      // Step 2: Simulate the LLM's JSON content after JSON.parse
+      // The LLM wrote: "content": ">.<\\n(o.o)\\n ^_^\\n<`'-'`>\\n..."
+      // After JSON.parse, \n becomes actual newlines
+      // This is the exact content from the user's example
+      const fishArt = [
+        '>.<',
+        '(o.o)',
+        ' ^_^',
+        "<`'-'`>",
+        '(O_O)',
+        ' ^_^',
+        '(>.<)',
+        ' / \\_',
+        ' (    @\\___',
+        '    /_\\',
+        '  (_____@\\',
+        '   |||||\\\\',
+        '   ||||| \\\\_',
+      ].join('\n') + '\n';
+
+      const writeResult = await engine.execute('write_file', {
+        path: 'fish-app/fish.txt',
+        content: fishArt,
+      });
+      assert.equal(writeResult.success, true);
+
+      // Step 3: Verify the file content is preserved exactly (NOT repaired, since it's .txt)
+      const written = readFileSync(join(dir, 'fish-app', 'fish.txt'), 'utf-8');
+      assert.equal(written, fishArt);
+      assert.equal(written.split('\n').length, 14); // 13 fish lines + trailing newline = 14
+
+      cleanup(dir);
+    });
+
     it('end-to-end: simulates the exact fishtank-app failure scenario', async () => {
       // This is the EXACT scenario that failed:
       // 1. LLM writes a JS file with console.log("Adding a fish...\n");
