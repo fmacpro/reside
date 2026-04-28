@@ -507,6 +507,10 @@ export class Agent {
                 pattern: /inquirer\.prompt is not a function/i,
                 guidance: 'The "inquirer" package v9+ is ESM-only and does not support require("inquirer").prompt in CommonJS. To fix this, either: (1) Use dynamic import: const { default: inquirer } = await import("inquirer"); then use inquirer.prompt(), OR (2) Install an older CJS-compatible version: npm install inquirer@8.2.6, OR (3) Set "type": "module" in package.json and use import statements instead of require(). Do NOT reinstall inquirer — the version is fine, the import syntax needs to change.',
               },
+              {
+                pattern: /MODULE_NOT_FOUND/i,
+                guidance: 'The source file does not exist. You forgot to write it! You MUST use write_file() to create the source file BEFORE running it. Do NOT retry the run command — write the source file first.',
+              },
             ];
 
             const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
