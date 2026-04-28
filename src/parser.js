@@ -275,9 +275,51 @@ function extractToolCalls(parsed) {
  * @param {any} obj
  * @returns {ToolCall|null}
  */
+/**
+ * Map of tool names to their expected single string argument name.
+ * Some models (like Gemma3) output "arguments" as a plain string
+ * instead of an object, e.g.:
+ *   {"tool": "search_web", "arguments": "current price of bitcoin"}
+ * instead of:
+ *   {"tool": "search_web", "arguments": {"query": "current price of bitcoin"}}
+ *
+ * This map tells us which argument name to use when converting
+ * a string arguments value to the proper object format.
+ */
+const TOOL_STRING_ARG_MAP = {
+  search_web: 'query',
+  fetch_url: 'url',
+  read_file: 'path',
+  write_file: 'path',
+  edit_file: 'file_path',
+  list_files: 'path',
+  search_files: 'path',
+  create_directory: 'path',
+  delete_file: 'path',
+  execute_command: 'command',
+  get_current_time: 'format',
+  test_app: 'args',
+  finish: 'message',
+};
+
 function extractSingleToolCall(obj) {
   if (!obj || typeof obj !== 'object') return null;
   if (!obj.tool || typeof obj.tool !== 'string') return null;
+
+  // Handle case where "arguments" is a plain string instead of an object.
+  // Some models (e.g., Gemma3) output:
+  //   {"tool": "search_web", "arguments": "current price of bitcoin"}
+  // We convert this to the proper object format based on the tool name.
+  if (typeof obj.arguments === 'string') {
+    const argName = TOOL_STRING_ARG_MAP[obj.tool];
+    if (argName) {
+      obj.arguments = { [argName]: obj.arguments };
+    } else {
+      // Unknown tool with string arguments — can't convert, reject
+      return null;
+    }
+  }
+
   if (!obj.arguments || typeof obj.arguments !== 'object') return null;
 
   return {
