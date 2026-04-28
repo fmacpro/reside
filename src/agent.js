@@ -283,6 +283,12 @@ export class Agent {
       try {
         response = await this.ollama.chat(this.config.model, this.messages, {
           temperature: 0.1,
+          // Set a generous token limit (8192) to prevent the model from being
+          // truncated mid-response. The LLM often writes long code files with
+          // JSON tool calls in a single response, and a low token limit would
+          // truncate the JSON mid-parse, causing the tool call to fail silently.
+          // The agent loop's maxIterations already prevents runaway generation.
+          maxTokens: 8192,
         });
       } catch (err) {
         console.error(`\n❌ Model request failed: ${err.message}`);
