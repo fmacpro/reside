@@ -212,6 +212,36 @@ The `search_web(query)` tool uses [DuckDuckGo](https://html.duckduckgo.com/html/
 🤖 The latest LTS version of Node.js is 22.x...
 ```
 
+**Chat examples:**
+
+```
+💬 > what is the current price of bitcoin
+
+🔧 search_web("current price of bitcoin")
+   ✅ Found 5 results
+
+🤖 The current price of Bitcoin is $76,711.52 USD as of the time this information was fetched.
+
+If you'd like to see more detailed information or the full article, please let me know!
+```
+
+```
+💬 > how many children does Donald Trump have
+
+🔧 search_web("Donald Trump's children")
+   ✅ Found 5 results
+
+🤖 Donald Trump has five children:
+
+1. Donald Jr.
+2. Ivanka
+3. Eric
+4. Tiffany
+5. Barron
+
+If you'd like to see more detailed information or the full article, please let me know!
+```
+
 The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to bypass bot detection. It launches a headless Chrome browser with a desktop viewport, navigates to DuckDuckGo HTML, and extracts results from the rendered page. Ads are automatically filtered out, and redirect URLs are resolved to their real destinations.
 
 `search_web` also follows the top result links to fetch actual article content (titles and summaries), so the LLM gets rich information directly from search results without needing a separate `fetch_url` call.
