@@ -150,6 +150,10 @@ export class Agent {
     // Track npm install without cwd failures to detect repeated failures
     this._npmInstallNoCwdFailures = 0;
 
+    // Track whether any source files were written in this session.
+    // Used to detect when the LLM calls finish() without writing any code.
+    this._hasWrittenSourceFile = false;
+
   }
 
   /**
@@ -386,6 +390,12 @@ export class Agent {
         const criticalTools = ['write_file', 'create_directory', 'edit_file'];
 
         if (result.success) {
+          // Track whether any source files have been written in this session.
+          // Used to detect when the LLM calls finish() without writing any code.
+          if (tc.tool === 'write_file' || tc.tool === 'edit_file') {
+            this._hasWrittenSourceFile = true;
+          }
+
           if (this.config.debugMode) {
             // Debug mode: show full raw output (truncated at 500 chars)
             const outputPreview = result.output
@@ -557,6 +567,28 @@ export class Agent {
           });
 
           if (tc.tool === 'finish') {
+            // If the LLM calls finish() without ever writing any source files,
+            // intercept it and inject guidance instead of ending the session.
+            // The LLM often searches the web, installs deps, then calls finish()
+            // without writing the actual application code.
+            if (!this._hasWrittenSourceFile) {
+              console.log('   ⚠️ finish() called but no source files were written — intercepting');
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: tc.tool,
+                  arguments: tc.arguments,
+                  result: 'error',
+                  output: 'Error: You called finish() but never wrote any source files. You MUST use write_file() to create the application source code (e.g., app.js, index.js) before calling finish(). The user asked you to build an app — searching the web and installing packages is not enough. Write the actual code first.',
+                }),
+              });
+              this.messages.push({
+                role: 'system',
+                content: 'You called finish() without writing any source files. The user asked you to build an app. You MUST write the actual application code using write_file() before calling finish(). Do NOT call finish() again until you have created the source files.',
+              });
+              // Do NOT set finished = true — the LLM gets another chance to write the code
+              break;
+            }
             finished = true;
             console.log(`\n✅ ${result.output}`);
             break;
