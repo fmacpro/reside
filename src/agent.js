@@ -197,6 +197,13 @@ export class Agent {
     this._runtimeErrorCount = 0;
     this._lastRunCommand = '';
 
+    // Track whether the self-healing mechanism has been triggered in this
+    // session. After the first self-healing cycle (auto-run test_app on
+    // finish(), inject error, LLM fixes code, re-run test_app), subsequent
+    // finish() calls are allowed through without re-testing. This prevents
+    // infinite fix loops.
+    this._hasRunSelfHeal = false;
+
   }
 
   /**
@@ -839,6 +846,89 @@ export class Agent {
               // Do NOT set finished = true — the LLM gets one more chance to write the code
               break;
             }
+
+            // ============================================================
+            // SELF-HEALING: Auto-run test_app after entry point is written
+            // ============================================================
+            // When the LLM calls finish() after writing an entry point, we
+            // automatically run test_app to verify the app works. If it fails,
+            // we inject the error and give the LLM a chance to fix the code.
+            // This prevents shipping apps with runtime errors.
+            //
+            // We only do this once per session to avoid infinite fix loops.
+            // If the LLM has already been through a self-healing cycle, we
+            // let the finish() through.
+            if (!this._hasRunSelfHeal) {
+              this._hasRunSelfHeal = true;
+
+              // Find the current app directory from the last write_file call
+              const lastWriteCall = [...toolCalls].reverse().find(t =>
+                t.tool === 'write_file' || t.tool === 'edit_file'
+              );
+              const lastFilePath = lastWriteCall?.arguments?.path || lastWriteCall?.arguments?.file_path || '';
+              const appDir = lastFilePath.split('/')[0];
+
+              if (appDir) {
+                console.log(`   🔍 Self-healing: testing app "${appDir}"...`);
+                const testResult = await this.toolEngine.execute('test_app', { args: '' });
+
+                if (testResult.success) {
+                  // App runs successfully — allow finish() to complete
+                  console.log(`   ✅ App "${appDir}" runs successfully!`);
+                  // Inject the test result so the LLM sees it worked
+                  this.messages.push({
+                    role: 'tool',
+                    content: JSON.stringify({
+                      tool: 'test_app',
+                      arguments: { args: '' },
+                      result: 'success',
+                      output: testResult.output,
+                      data: testResult.data,
+                    }),
+                  });
+                  finished = true;
+                  console.log(`\n✅ ${result.output}`);
+                  break;
+                } else {
+                  // App failed — inject error and give LLM a chance to fix
+                  console.log(`   ❌ App "${appDir}" failed: ${testResult.error}`);
+                  console.log('   🔧 Injecting error for LLM to fix...');
+
+                  // Inject the test_app result as a tool result
+                  this.messages.push({
+                    role: 'tool',
+                    content: JSON.stringify({
+                      tool: 'test_app',
+                      arguments: { args: '' },
+                      result: 'error',
+                      output: testResult.error,
+                      data: testResult.data,
+                    }),
+                  });
+
+                  // Inject guidance telling the LLM to fix the code
+                  this.messages.push({
+                    role: 'system',
+                    content: `The app "${appDir}" failed to run. Here is the error:
+
+${testResult.error}
+
+You MUST fix this error before finishing. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. After fixing, call test_app() again to verify the fix works. Do NOT call finish() until the app runs successfully.
+
+Common issues:
+- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire()
+- If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports
+- If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install
+- If the error is a TypeError (e.g., "cannot read properties of undefined"), check the API response structure — the API may return data in a different format than expected`,
+                  });
+
+                  // Do NOT set finished = true — the LLM gets a chance to fix the code
+                  // Skip the finish() result injection so the LLM doesn't see a success result
+                  continue;
+                }
+              }
+            }
+
             finished = true;
             console.log(`\n✅ ${result.output}`);
             break;

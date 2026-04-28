@@ -160,6 +160,10 @@ export class ToolEngine {
         desc: 'Get the current system date and/or time. Use format to request specific parts: "full" (default) for complete date+time+timezone, "date" for just the date, "time" for just the time, "day" for day of week, "month" for month name, "year" for the year, "timestamp" for Unix timestamp. Returns structured data with all fields regardless of format.',
         params: ['format?'],
       },
+      test_app: {
+        desc: 'Test the application by running it and checking for errors. Use this AFTER writing the source code to verify the app works. For apps that need command-line arguments, pass them in the "args" parameter (e.g., "London" for a weather app). Returns the app output or any error messages.',
+        params: ['args?'],
+      },
       finish: {
         desc: 'Call this when the task is complete',
         params: ['message'],
@@ -1318,6 +1322,104 @@ export class ToolEngine {
         }
 
         return { success: true, output, data };
+      },
+
+      test_app: async ({ args }) => {
+        // Find the entry point file in the current app directory
+        const appDir = this._currentApp;
+        if (!appDir) {
+          return { success: false, error: 'No app directory found. Create an app first with create_directory() and write source files with write_file().' };
+        }
+
+        const appPath = join(this.workspaceDir, appDir);
+        if (!existsSync(appPath)) {
+          return { success: false, error: `App directory "${appDir}" does not exist.` };
+        }
+
+        // Look for common entry point files
+        const entryPoints = ['app.js', 'index.js', 'server.js', 'main.js', 'app.mjs', 'index.mjs'];
+        let entryPoint = null;
+        for (const ep of entryPoints) {
+          const epPath = join(appPath, ep);
+          if (existsSync(epPath)) {
+            entryPoint = ep;
+            break;
+          }
+        }
+
+        if (!entryPoint) {
+          return { success: false, error: `No entry point file found in "${appDir}/". Expected one of: ${entryPoints.join(', ')}. Write the source code file first using write_file().` };
+        }
+
+        // Build the command: node <entrypoint> [args]
+        const cmdArgs = args ? ` ${args}` : '';
+        const command = `node ${entryPoint}${cmdArgs}`;
+
+        // Run with a 5s timeout (same as execute_command for run commands)
+        return new Promise(resolve => {
+          const child = spawn('/bin/sh', ['-c', command], {
+            cwd: appPath,
+            env: { ...process.env, PATH: process.env.PATH },
+            stdio: ['pipe', 'pipe', 'pipe'],
+            shell: false,
+          });
+
+          let stdout = '';
+          let stderr = '';
+          let timedOut = false;
+          let resolved = false;
+
+          const timeout = setTimeout(() => {
+            timedOut = true;
+            child.kill();
+            resolved = true;
+            const output = stdout.trim() || stderr.trim() || '(no output)';
+            resolve({
+              success: false,
+              error: `The app timed out after 5s and produced no output. This may indicate an infinite loop, a missing console.log, or the app is waiting for user input. Check the code and fix any issues.`,
+              output,
+              data: { exitCode: null, timedOut: true, stdout, stderr, appDir, entryPoint },
+            });
+          }, 5000);
+
+          child.stdout.on('data', data => { stdout += data.toString(); });
+          child.stderr.on('data', data => { stderr += data.toString(); });
+
+          child.on('close', code => {
+            clearTimeout(timeout);
+            if (resolved) return;
+
+            resolved = true;
+
+            if (code === 0) {
+              resolve({
+                success: true,
+                output: stdout.trim() || '(app ran successfully with no output)',
+                data: { exitCode: 0, stdout, stderr, appDir, entryPoint },
+              });
+            } else {
+              // Extract the actual error message from stderr
+              const errorMsg = stderr.trim() || stdout.trim() || `App exited with code ${code}`;
+              resolve({
+                success: false,
+                error: errorMsg,
+                output: errorMsg,
+                data: { exitCode: code, stdout, stderr, appDir, entryPoint },
+              });
+            }
+          });
+
+          child.on('error', err => {
+            clearTimeout(timeout);
+            if (resolved) return;
+            resolved = true;
+            resolve({
+              success: false,
+              error: `Failed to run app: ${err.message}`,
+              data: { exitCode: null, stdout, stderr, appDir, entryPoint },
+            });
+          });
+        });
       },
 
       finish: async ({ message = 'Task completed' }) => {

@@ -120,6 +120,7 @@ Available tools:
 - fetch_url(url) - Fetch a URL and extract its main article content. Returns clean text with the title and body content, stripped of navigation, ads, and other boilerplate. Use this to read the full content of a page found via search_web.
 - get_current_time(format?) - Get the current system date/time. format options: "full" (default, complete date+time+timezone), "date", "time", "day", "month", "year", "timestamp". Returns structured data with all fields regardless of format. Choose the format based on what the user asked: if they ask "what time is it?" use "time", if they ask "what's the date?" use "date", if they ask "what day is it?" use "day", etc.
 - delete_file(path) - Delete a file or directory
+- test_app(args?) - Test the application by running it and checking for errors. Use this AFTER writing the source code to verify the app works. For apps that need command-line arguments, pass them in the "args" parameter (e.g., "London" for a weather app). Returns the app output or any error messages. The system will also automatically run this when you call finish() after writing an entry point.
 - finish(message) - Signal that a task is complete
 
 CRITICAL: You MUST use search_web() for any question about current events, news, prices, or information you don't know with certainty. Do NOT fabricate information or use placeholder text like "[Insert Current Event]". Always use tools to get real data.

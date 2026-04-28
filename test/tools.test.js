@@ -651,8 +651,9 @@ describe('ToolEngine', () => {
       assert.ok(names.includes('search_web'));
       assert.ok(names.includes('fetch_url'));
       assert.ok(names.includes('get_current_time'));
+      assert.ok(names.includes('test_app'));
       assert.ok(names.includes('finish'));
-      assert.equal(names.length, 12);
+      assert.equal(names.length, 13);
     });
   });
 
