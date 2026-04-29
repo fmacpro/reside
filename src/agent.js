@@ -381,6 +381,26 @@ export class Agent {
       const content = response.message.content || '';
       const { text, toolCalls } = parseToolCalls(content);
 
+      // Detect truncated responses (hit maxTokens mid-generation).
+      // When done_reason is "length", the LLM ran out of tokens before completing
+      // its response. This often results in truncated JSON tool calls that the
+      // parser can't extract. We inject guidance to continue from where it left off.
+      // IMPORTANT: This check must happen BEFORE pushing the assistant message
+      // (line ~402), because we push it ourselves here with the truncation guidance.
+      const isTruncated = response.done_reason === 'length';
+      if (isTruncated) {
+        console.log('   ⚠️ Response was truncated (hit token limit) — re-prompting to continue');
+        this.messages.push({
+          role: 'assistant',
+          content,
+        });
+        this.messages.push({
+          role: 'system',
+          content: 'Your previous response was cut off because it hit the maximum token limit. Continue from where you left off. If you were in the middle of writing a tool call (JSON), complete it. Do NOT repeat what you already wrote — just continue from the interruption point.',
+        });
+        continue;
+      }
+
       this.messages.push({ role: 'assistant', content });
 
       // No tool calls = text-only response, return to user
@@ -425,7 +445,8 @@ export class Agent {
         // responses should fall through to the existing checks inside `if (lastText)`.
         const lastSystemMsg = this.messages.slice().reverse().find(m => m.role === 'system');
         const hasCreateDirGuidance = lastSystemMsg?.content?.includes('Directory created successfully') &&
-          lastSystemMsg.content.includes('write the main application source code file');
+          (lastSystemMsg.content.includes('write the main application source code file') ||
+           lastSystemMsg.content.includes('write the source code file using write_file'));
         const hasNpmInitGuidance = lastSystemMsg?.content?.includes('Project initialized successfully') &&
           lastSystemMsg.content.includes('write the main application entry point');
         const hasTestAppFailureGuidance = lastSystemMsg?.content?.includes('called test_app() but you did NOT modify any code') &&
@@ -674,7 +695,7 @@ export class Agent {
           if (isTopLevel && !this._hasWrittenEntryPoint) {
             this.messages.push({
               role: 'system',
-              content: 'Directory created successfully. Now you MUST write the main application source code file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the source code file first.',
+              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN write the source code file using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code file first.',
             });
           }
         }
@@ -1090,6 +1111,12 @@ export class Agent {
               {
                 pattern: /^(TypeError|ReferenceError|SyntaxError|RangeError|URIError):/m,
                 guidance: 'The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.',
+              },
+              {
+                // ENOENT errors — typically means a required file (like package.json) doesn't exist.
+                // The LLM often writes source code that reads package.json but forgets to run npm init -y first.
+                pattern: /ENOENT/i,
+                guidance: 'The application failed because a required file does not exist. This is often because you forgot to run "npm init -y" to create package.json. You MUST run execute_command({"command":"npm init -y","cwd":"<app-name>"}) to initialize the project before running the app. Do NOT retry the run command — initialize the project first.',
               },
             ];
 
