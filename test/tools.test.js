@@ -115,13 +115,12 @@ describe('ToolEngine', () => {
   });
 
   describe('edit_file', () => {
-    it('replaces text in a file', async () => {
+    it('replaces text in a file using diff-based matching', async () => {
       const { dir, engine } = createTestWorkspace();
       writeFileSync(join(dir, 'app.js'), 'const x = 1;\nconsole.log(x);', 'utf-8');
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'const x = 1;',
-        new_string: 'const x = 42;',
+        new_string: 'const x = 42;\nconsole.log(x);',
       });
       assert.equal(result.success, true);
       assert.match(result.output, /Edited/);
@@ -129,12 +128,11 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
-    it('fails if old_string not found', async () => {
+    it('fails if no diff match possible', async () => {
       const { dir, engine } = createTestWorkspace();
       writeFileSync(join(dir, 'app.js'), 'const x = 1;', 'utf-8');
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'const y = 2;',
         new_string: 'const z = 3;',
       });
       assert.equal(result.success, false);
@@ -146,15 +144,14 @@ describe('ToolEngine', () => {
       const { dir, engine } = createTestWorkspace();
       const result = await engine.execute('edit_file', {
         path: 'missing.js',
-        old_string: 'a',
         new_string: 'b',
       });
       assert.equal(result.success, false);
       cleanup(dir);
     });
 
-    it('matches old_string with whitespace-normalized fallback (extra newlines before braces)', async () => {
-      // Simulate the Qwen 3.5 bug: LLM generates old_string with extra newlines
+    it('matches with whitespace differences (extra newlines before braces)', async () => {
+      // Simulate the Qwen 3.5 bug: LLM generates new code with extra newlines
       // before opening braces, e.g., `options =\n{` instead of `options = {`
       const { dir, engine } = createTestWorkspace();
       const originalContent = [
@@ -167,11 +164,10 @@ describe('ToolEngine', () => {
       ].join('\n');
       writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
 
-      // LLM generates old_string with extra newline before `{`
+      // LLM provides new code with extra newline before `{`
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'const options =\n{',
-        new_string: 'const options = {\n  timeout: 5000,',
+        new_string: 'const options = {\n  timeout: 5000,\n  method: "GET",',
       });
       assert.equal(result.success, true);
       const written = readFileSync(join(dir, 'app.js'), 'utf-8');
@@ -180,8 +176,7 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
-    it('matches old_string with whitespace-normalized fallback (extra newlines in arrow function)', async () => {
-      // Simulate another common pattern: LLM inserts newline before `{` in arrow function body
+    it('matches with whitespace differences (extra newlines in arrow function)', async () => {
       const { dir, engine } = createTestWorkspace();
       const originalContent = [
         'const fn = (x) => {',
@@ -190,11 +185,9 @@ describe('ToolEngine', () => {
       ].join('\n');
       writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
 
-      // LLM generates old_string with extra newline before `{`
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'const fn = (x) =>\n{',
-        new_string: 'const fn = (x) => {\n  console.log("called");',
+        new_string: 'const fn = (x) => {\n  console.log("called");\n  return x * 2;\n};',
       });
       assert.equal(result.success, true);
       const written = readFileSync(join(dir, 'app.js'), 'utf-8');
@@ -202,12 +195,11 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
-    it('still fails if old_string is completely different (no whitespace-only difference)', async () => {
+    it('still fails if new code is completely different (no anchor match)', async () => {
       const { dir, engine } = createTestWorkspace();
       writeFileSync(join(dir, 'app.js'), 'const x = 1;', 'utf-8');
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'const y = 2;',
         new_string: 'const z = 3;',
       });
       assert.equal(result.success, false);
@@ -215,14 +207,10 @@ describe('ToolEngine', () => {
       cleanup(dir);
     });
 
-    it('correctly replaces mid-file text with whitespace-normalized matching (the slice-end bug)', async () => {
-      // Regression test for the bug where edit_file used old_string.length instead of the
-      // actual matched text length in the original content when using whitespace-normalized
-      // matching. If old_string has different whitespace (e.g., 4-space indent vs 2-space),
-      // old_string.length differs from the matched text length, causing the replacement to
-      // eat or leave extra characters after the match.
+    it('correctly replaces mid-file text with different formatting (the slice-end bug)', async () => {
+      // Regression test: edit_file must correctly compute slice boundaries
+      // when the new code has different formatting than the original.
       const { dir, engine } = createTestWorkspace();
-      // File uses 2-space indentation
       const originalContent = [
         'const x = 1;',
         'function foo() {',
@@ -232,16 +220,111 @@ describe('ToolEngine', () => {
       ].join('\n');
       writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
 
-      // LLM generates old_string with 4-space indentation and extra newline before brace
       const result = await engine.execute('edit_file', {
         path: 'app.js',
-        old_string: 'function foo()\n{\n    const y = 2;\n}',
         new_string: 'function foo() {\n  const y = 42;\n}',
       });
       assert.equal(result.success, true);
       const written = readFileSync(join(dir, 'app.js'), 'utf-8');
-      // The const z = 3; line must be preserved — the old bug would truncate it
+      // The const z = 3; line must be preserved
       assert.equal(written, 'const x = 1;\nfunction foo() {\n  const y = 42;\n}\nconst z = 3;');
+      cleanup(dir);
+    });
+
+    it('replaces a function using diff-based matching', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const originalContent = [
+        'const x = 1;',
+        '',
+        'function foo() {',
+        '  const y = 2;',
+        '  return y;',
+        '}',
+        '',
+        'const z = 3;',
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        new_string: 'function foo() {\n  const y = 42;\n  return y;\n}',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      assert.equal(written, 'const x = 1;\n\nfunction foo() {\n  const y = 42;\n  return y;\n}\n\nconst z = 3;');
+      cleanup(dir);
+    });
+
+    it('replaces a function with different formatting using diff-based matching', async () => {
+      // Test the exact scenario that failed: LLM provides new code with different
+      // formatting (braces on new lines, different indentation).
+      const { dir, engine } = createTestWorkspace();
+      const originalContent = [
+        'const x = 1;',
+        '',
+        'function foo() {',
+        '  const y = 2;',
+        '  return y;',
+        '}',
+        '',
+        'const z = 3;',
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      // LLM provides new code with braces on new lines (hallucinated formatting)
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        new_string: 'function foo()\n{\n  const y = 42;\n  return y;\n}',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      // The new code replaces the old function, preserving surrounding context
+      assert.equal(written, 'const x = 1;\n\nfunction foo()\n{\n  const y = 42;\n  return y;\n}\n\nconst z = 3;');
+      cleanup(dir);
+    });
+
+    it('handles structural differences (brace on separate line from semicolon)', async () => {
+      // Test the exact scenario that failed in the weather app:
+      // LLM provides new code with `}\n;` (brace on one line, semicolon on next)
+      // instead of `};` on the same line.
+      const { dir, engine } = createTestWorkspace();
+      const originalContent = [
+        'const options = {',
+        '  method: "GET",',
+        '};',
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        new_string: 'const options = {\n  method: "POST",\n};',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      assert.equal(written, 'const options = {\n  method: "POST",\n};');
+      cleanup(dir);
+    });
+
+    it('fails with helpful message when no match found', async () => {
+      const { dir, engine } = createTestWorkspace();
+      writeFileSync(join(dir, 'app.js'), 'const x = 1;', 'utf-8');
+      // Provide completely unrelated code — no anchor match
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        new_string: 'function totallyUnrelated() {\n  return 42;\n}',
+      });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Could not find/);
+      cleanup(dir);
+    });
+
+    it('fails for missing new_string', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+      });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing/);
       cleanup(dir);
     });
   });
