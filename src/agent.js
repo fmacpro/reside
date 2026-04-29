@@ -383,7 +383,7 @@ export class Agent {
 
           this.messages.push({
             role: 'system',
-            content: `You just read "${this._lastReadFilePath}" but did NOT make any changes. You MUST use edit_file() to apply the fix. Do NOT just explain what to do — call edit_file() with the exact changes needed. Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "old_string": "the exact text to replace", "new_string": "the replacement text"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call edit_file() with the correct arguments.`,
+            content: `You just read "${this._lastReadFilePath}" but did NOT make any changes. You MUST use edit_file() to apply the fix. Do NOT just explain what to do — call edit_file() with the exact changes needed. Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "new_string": "the replacement text (include enough surrounding context like the function signature so the tool can locate the right section)"}}\n\nDo NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
           });
           // Reset the flag so we don't re-prompt again on the next text-only response
           this._lastToolWasReadFile = false;
@@ -734,7 +734,7 @@ export class Agent {
           });
           this.messages.push({
             role: 'system',
-            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "old_string": "the exact text to replace", "new_string": "the replacement text"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call edit_file() with the correct arguments.`,
+            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "new_string": "the replacement text (include enough surrounding context like the function signature so the tool can locate the right section)"}}\n\nDo NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
           });
           // Skip remaining tool calls in this iteration so the LLM sees the guidance
           break;
