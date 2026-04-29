@@ -157,6 +157,19 @@ export class Agent {
     // Track npm install without cwd failures to detect repeated failures
     this._npmInstallNoCwdFailures = 0;
 
+    // Track whether the LLM has just read a file (e.g., read_file was the last tool call).
+    // Used to detect when the LLM reads a file and then responds with text-only explaining
+    // what to fix instead of actually calling edit_file() to make the changes.
+    this._lastToolWasReadFile = false;
+    this._lastReadFilePath = '';
+
+    // Track how many times the LLM has been re-prompted to use edit_file() after reading
+    // a file. If the LLM ignores the re-prompt and calls execute_command (testing the app)
+    // instead of edit_file (fixing the code), we intercept and re-prompt again.
+    // After 2 re-prompts, force-end the session — the LLM is stuck in a read-only loop.
+    this._readFileRepromptCount = 0;
+    this._maxReadFileReprompts = 2;
+
     // Track whether any source files were written in this session.
     // Used to detect when the LLM calls finish() without writing any code.
     this._hasWrittenSourceFile = false;
@@ -343,6 +356,36 @@ export class Agent {
       // No tool calls = text-only response, return to user
       if (toolCalls.length === 0) {
         lastText = text || content;
+
+        // Detect: LLM read a file and then responded with text-only (explaining what to fix,
+        // or empty/whitespace-only response) instead of actually calling edit_file() to make
+        // the changes. This check is done BEFORE the `if (lastText)` guard so it catches
+        // cases where the LLM's response is empty or whitespace-only after reading a file.
+        if (this._lastToolWasReadFile) {
+          this._readFileRepromptCount++;
+          console.log(`   ⚠️ Text-only response after read_file("${this._lastReadFilePath}") — re-prompting to use edit_file() (#${this._readFileRepromptCount})`);
+
+          // If the LLM has been re-prompted multiple times and still isn't calling edit_file(),
+          // force-end the session — the LLM is stuck in a read-only loop.
+          if (this._readFileRepromptCount >= this._maxReadFileReprompts) {
+            console.log('   ⚠️ LLM repeatedly ignored edit_file() re-prompt — ending session.');
+            this.messages.push({
+              role: 'system',
+              content: `You have been told multiple times to use edit_file() to fix "${this._lastReadFilePath}" but you keep responding with text instead. The session is ending. Please fix the file manually.`,
+            });
+            finished = true;
+            break;
+          }
+
+          this.messages.push({
+            role: 'system',
+            content: `You just read "${this._lastReadFilePath}" but did NOT make any changes. You MUST use edit_file() to apply the fix. Do NOT just explain what to do — call edit_file() with the exact changes needed. Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "old_string": "the exact text to replace", "new_string": "the replacement text"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call edit_file() with the correct arguments.`,
+          });
+          // Reset the flag so we don't re-prompt again on the next text-only response
+          this._lastToolWasReadFile = false;
+          continue;
+        }
+
         if (lastText) {
           // Detect fabricated placeholder responses — the model is making up info instead of using tools
           const placeholderPatterns = [
@@ -640,6 +683,58 @@ export class Agent {
         // Define critical tools list — used both for error handling below
         // and for deciding whether to inject tool results.
         const criticalTools = ['write_file', 'create_directory', 'edit_file'];
+
+        // Track read_file calls to detect when the LLM reads a file and then
+        // responds with text-only explaining what to fix instead of calling edit_file().
+        if (tc.tool === 'read_file' && result.success) {
+          this._lastToolWasReadFile = true;
+          this._lastReadFilePath = tc.arguments?.path || tc.arguments?.file_path || '';
+        } else if (tc.tool === 'edit_file' || tc.tool === 'write_file') {
+          // Reset the flag when the LLM actually makes changes — it's now acting, not just explaining
+          this._lastToolWasReadFile = false;
+          this._lastReadFilePath = '';
+          this._readFileRepromptCount = 0;
+        }
+
+        // Detect: LLM was re-prompted to use edit_file() after reading a file, but instead
+        // called execute_command (testing the app) or another non-editing tool. Intercept
+        // and re-prompt again — the LLM should fix the code, not test the broken app.
+        if (this._readFileRepromptCount > 0 && tc.tool !== 'edit_file' && tc.tool !== 'write_file' && tc.tool !== 'read_file') {
+          this._readFileRepromptCount++;
+          console.log(`   ⚠️ LLM called ${tc.tool}() instead of edit_file() after read_file re-prompt (#${this._readFileRepromptCount}) — re-prompting`);
+
+          if (this._readFileRepromptCount >= this._maxReadFileReprompts) {
+            console.log('   ⚠️ LLM repeatedly ignored edit_file() re-prompt — ending session.');
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. The session is ending.`,
+              }),
+            });
+            finished = true;
+            break;
+          }
+
+          // Inject guidance telling the LLM to use edit_file() instead
+          this.messages.push({
+            role: 'tool',
+            content: JSON.stringify({
+              tool: tc.tool,
+              arguments: tc.arguments,
+              result: 'error',
+              output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. Do NOT test the app or run commands — use edit_file() to fix the code first.`,
+            }),
+          });
+          this.messages.push({
+            role: 'system',
+            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "old_string": "the exact text to replace", "new_string": "the replacement text"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call edit_file() with the correct arguments.`,
+          });
+          // Skip remaining tool calls in this iteration so the LLM sees the guidance
+          break;
+        }
 
         if (result.success) {
           // Track whether any source files have been written in this session.

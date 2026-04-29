@@ -152,6 +152,68 @@ describe('ToolEngine', () => {
       assert.equal(result.success, false);
       cleanup(dir);
     });
+
+    it('matches old_string with whitespace-normalized fallback (extra newlines before braces)', async () => {
+      // Simulate the Qwen 3.5 bug: LLM generates old_string with extra newlines
+      // before opening braces, e.g., `options =\n{` instead of `options = {`
+      const { dir, engine } = createTestWorkspace();
+      const originalContent = [
+        'const options = {',
+        '  method: "GET",',
+        '  headers: {',
+        '    "Content-Type": "application/json",',
+        '  },',
+        '};',
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      // LLM generates old_string with extra newline before `{`
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        old_string: 'const options =\n{',
+        new_string: 'const options = {\n  timeout: 5000,',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      assert.match(written, /timeout: 5000/);
+      assert.equal(written.includes('const options = {'), true);
+      cleanup(dir);
+    });
+
+    it('matches old_string with whitespace-normalized fallback (extra newlines in arrow function)', async () => {
+      // Simulate another common pattern: LLM inserts newline before `{` in arrow function body
+      const { dir, engine } = createTestWorkspace();
+      const originalContent = [
+        'const fn = (x) => {',
+        '  return x * 2;',
+        '};',
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      // LLM generates old_string with extra newline before `{`
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        old_string: 'const fn = (x) =>\n{',
+        new_string: 'const fn = (x) => {\n  console.log("called");',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      assert.match(written, /console\.log\("called"\)/);
+      cleanup(dir);
+    });
+
+    it('still fails if old_string is completely different (no whitespace-only difference)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      writeFileSync(join(dir, 'app.js'), 'const x = 1;', 'utf-8');
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        old_string: 'const y = 2;',
+        new_string: 'const z = 3;',
+      });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Could not find/);
+      cleanup(dir);
+    });
   });
 
   describe('write_file - broken JS string literal repair (the fishtank-app bug)', () => {

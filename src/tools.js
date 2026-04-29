@@ -436,7 +436,46 @@ export class ToolEngine {
         }
 
         const content = readFileSync(fullPath, 'utf-8');
-        const idx = content.indexOf(old_string);
+
+        // Try exact match first
+        let idx = content.indexOf(old_string);
+
+        // If exact match fails, try whitespace-normalized matching.
+        // Some LLMs (e.g., Qwen 3.5) insert extra newlines before opening braces
+        // in object literals and arrow function bodies (e.g., `options =\n{` instead
+        // of `options = {`). We normalize by collapsing all whitespace runs to a
+        // single space, then find the normalized position and map it back to the
+        // original content.
+        if (idx === -1) {
+          // Normalize: collapse all whitespace runs (spaces, tabs, newlines) to a single space
+          const normalizeWs = (str) => str.replace(/\s+/g, ' ');
+          const normalizedContent = normalizeWs(content);
+          const normalizedOld = normalizeWs(old_string);
+          const normIdx = normalizedContent.indexOf(normalizedOld);
+          if (normIdx !== -1) {
+            // Map the normalized position back to the original content.
+            // Walk through the original content character by character, tracking
+            // how many non-whitespace characters we've seen, until we reach the
+            // position that corresponds to normIdx in the normalized string.
+            let origPos = 0;
+            let normPos = 0;
+            let inWhitespace = false;
+            while (origPos < content.length && normPos < normIdx) {
+              if (/\s/.test(content[origPos])) {
+                if (!inWhitespace) {
+                  inWhitespace = true;
+                  normPos++;
+                }
+              } else {
+                inWhitespace = false;
+                normPos++;
+              }
+              origPos++;
+            }
+            idx = origPos;
+          }
+        }
+
         if (idx === -1) {
           return { success: false, error: `Could not find the specified text in ${path}` };
         }
@@ -519,7 +558,9 @@ export class ToolEngine {
           } while (fixedNewString !== prev);
         }
 
-        const newContent = content.replace(old_string, fixedNewString);
+        // Use the found index for replacement (important when using whitespace-normalized matching,
+        // since old_string may not exactly match the content at idx).
+        const newContent = content.slice(0, idx) + fixedNewString + content.slice(idx + old_string.length);
         writeFileSync(fullPath, newContent, 'utf-8');
         return {
           success: true,

@@ -107,7 +107,7 @@ export class OllamaClient {
             'Content-Type': 'application/json',
             'Content-Length': Buffer.byteLength(payload),
           },
-          timeout: 120_000,
+          timeout: 300_000,
         },
         (res) => {
           let data = '';
