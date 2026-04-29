@@ -7,20 +7,10 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 ## Key Features
 
 - **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
-- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals (backtick strings), trailing commas, and single quotes.
-- **12 built-in tools** — Filesystem operations, web search, URL content extraction, current time, and shell command execution.
-- **ESM-by-default** — All new Node.js apps automatically get `"type": "module"` in `package.json` after `npm init -y`, so the LLM uses `import`/`export` syntax instead of `require()`.
-- **Prevents "talks instead of doing"** — The system prompt explicitly forbids the LLM from stopping after `npm install` to provide example code. It must always create the actual source files with `write_file()` and tell the user the command to run.
+- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals, trailing commas, and single quotes.
+- **12 built-in tools** — Filesystem operations, web search (DuckDuckGo, no API key), URL content extraction, current time, and shell command execution — all with automatic error recovery and self-healing.
+- **Self-healing** — After the LLM writes an app, Reside automatically runs it and injects any runtime errors back into the conversation for the LLM to fix, with up to 3 fix attempts.
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
-- **Web-aware** — Search the web via DuckDuckGo (no API key needed), fetch and extract article content from any URL, with automatic Puppeteer fallback for bot-protected sites.
-- **Loop-safe** — Detects when the LLM gets stuck in a tool-calling loop and forces a text response.
-- **JSON repair** — Automatically fixes common LLM JSON mistakes: backtick template literals (`\`code\`` → `"code"`), trailing commas, and single quotes — so tool calls succeed even when the model outputs slightly malformed JSON.
-- **Placeholder rejection** — Detects and rejects stub/placeholder content in `write_file` (e.g., `// Your code here`, empty function bodies), forcing the LLM to write complete, working code.
-- **Pre-install verification** — Before running `npm install <pkg>`, verifies the package exists on the registry and is compatible with the current Node.js version (v24.13.1).
-- **Native module preference** — The system prompt instructs the LLM to favor Node.js built-in modules over external npm packages, reducing dependencies.
-- **Server-aware** — CLI/TUI apps (`node app.js`, `python app.py`) run and complete normally with a 5-second timeout. Known server commands (`npm start`, `npm run dev`, `npx serve`) are blocked — the LLM tells you the command to run instead.
-- **Compact CLI output** — One-line tool status summaries by default; `--debug` flag for full verbose output.
-- **Model-agnostic** — Works with any Ollama model, not just Qwen.
 
 ## How It Works
 
