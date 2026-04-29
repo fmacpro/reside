@@ -163,7 +163,7 @@ export class ToolEngine {
       },
       edit_file: {
         desc: 'Edit an existing file by replacing text. Use write_file to create NEW files.',
-        params: ['path', 'old_string', 'new_string'],
+        params: ['path', 'file_path', 'old_string', 'new_string'],
       },
       list_files: {
         desc: 'List files and directories in a path',
@@ -420,8 +420,14 @@ export class ToolEngine {
         };
       },
 
-      edit_file: async ({ path, old_string, new_string }) => {
-        if (!path) return { success: false, error: 'Missing required argument: path' };
+      edit_file: async ({ path, file_path, old_string, new_string }) => {
+        // Accept both 'path' and 'file_path' argument names.
+        // The parser maps edit_file to expect 'file_path' (see TOOL_STRING_ARG_MAP in parser.js),
+        // and the agent's re-prompt messages tell the LLM to use 'file_path'.
+        // But the tool definition uses 'path' for consistency with other tools.
+        // Accept either to avoid confusing the LLM.
+        const effectivePath = path || file_path;
+        if (!effectivePath) return { success: false, error: 'Missing required argument: path' };
         if (!old_string) {
           return {
             success: false,
@@ -430,9 +436,9 @@ export class ToolEngine {
         }
         if (new_string === undefined) return { success: false, error: 'Missing required argument: new_string' };
 
-        const fullPath = this._resolvePath(path);
+        const fullPath = this._resolvePath(effectivePath);
         if (!existsSync(fullPath)) {
-          return { success: false, error: `File not found: ${path}` };
+          return { success: false, error: `File not found: ${effectivePath}` };
         }
 
         const content = readFileSync(fullPath, 'utf-8');
@@ -446,6 +452,12 @@ export class ToolEngine {
         // of `options = {`). We normalize by collapsing all whitespace runs to a
         // single space, then find the normalized position and map it back to the
         // original content.
+        // Track the end position in the original content for whitespace-normalized matches.
+        // When using whitespace-normalized matching, old_string.length may differ from the
+        // actual matched text length in the original content (e.g., different indentation).
+        // We need to use the correct end position for the replacement slice, not old_string.length.
+        let matchEnd = -1;
+
         if (idx === -1) {
           // Normalize: collapse all whitespace runs (spaces, tabs, newlines) to a single space
           const normalizeWs = (str) => str.replace(/\s+/g, ' ');
@@ -453,7 +465,7 @@ export class ToolEngine {
           const normalizedOld = normalizeWs(old_string);
           const normIdx = normalizedContent.indexOf(normalizedOld);
           if (normIdx !== -1) {
-            // Map the normalized position back to the original content.
+            // Map the normalized start position back to the original content.
             // Walk through the original content character by character, tracking
             // how many non-whitespace characters we've seen, until we reach the
             // position that corresponds to normIdx in the normalized string.
@@ -473,16 +485,37 @@ export class ToolEngine {
               origPos++;
             }
             idx = origPos;
+
+            // Map the normalized end position back to the original content.
+            // Walk from idx through the original content, tracking normalized position,
+            // until we reach normIdx + normalizedOld.length in the normalized string.
+            const normEnd = normIdx + normalizedOld.length;
+            let endPos = idx;
+            let endNormPos = normIdx;
+            let endInWhitespace = false;
+            while (endPos < content.length && endNormPos < normEnd) {
+              if (/\s/.test(content[endPos])) {
+                if (!endInWhitespace) {
+                  endInWhitespace = true;
+                  endNormPos++;
+                }
+              } else {
+                endInWhitespace = false;
+                endNormPos++;
+              }
+              endPos++;
+            }
+            matchEnd = endPos;
           }
         }
 
         if (idx === -1) {
-          return { success: false, error: `Could not find the specified text in ${path}` };
+          return { success: false, error: `Could not find the specified text in ${effectivePath}` };
         }
 
         // Fix broken string literals in the new content (same as write_file)
         let fixedNewString = String(new_string);
-        if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(path)) {
+        if (/\.(js|mjs|cjs|ts|jsx|tsx)$/i.test(effectivePath)) {
           // Split content into segments: template literal parts and non-template-literal parts.
           const splitIntoSegments = (str) => {
             const segments = [];
@@ -560,12 +593,18 @@ export class ToolEngine {
 
         // Use the found index for replacement (important when using whitespace-normalized matching,
         // since old_string may not exactly match the content at idx).
-        const newContent = content.slice(0, idx) + fixedNewString + content.slice(idx + old_string.length);
+        // When using whitespace-normalized matching, matchEnd contains the correct end position
+        // in the original content. Using old_string.length would be wrong because the LLM's
+        // old_string may have different whitespace (e.g., different indentation, extra newlines)
+        // than the actual matched text in the file, causing the replacement to eat or leave
+        // extra characters.
+        const sliceEnd = matchEnd !== -1 ? matchEnd : idx + old_string.length;
+        const newContent = content.slice(0, idx) + fixedNewString + content.slice(sliceEnd);
         writeFileSync(fullPath, newContent, 'utf-8');
         return {
           success: true,
-          output: `Edited ${path}: replaced "${old_string.substring(0, 50)}..." with "${fixedNewString.substring(0, 50)}..."`,
-          data: { path, replaced: old_string.length, bytes: newContent.length },
+          output: `Edited ${effectivePath}: replaced "${old_string.substring(0, 50)}..." with "${fixedNewString.substring(0, 50)}..."`,
+          data: { path: effectivePath, replaced: old_string.length, bytes: newContent.length },
         };
       },
 

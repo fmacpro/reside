@@ -39,7 +39,7 @@ describe('config', () => {
     const config = await import('../src/config.js');
     const cfg = config.loadConfig();
     assert.equal(cfg.ollamaHost, 'http://localhost:11434');
-    assert.equal(cfg.model, 'qwen2.5-coder:7b');
+    assert.equal(cfg.model, 'qwen3.5:latest');
     assert.match(cfg.workdir, /workdir$/);
     assert.equal(cfg.maxIterations, 25);
     assert.equal(cfg.autoCommit, true);

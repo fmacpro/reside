@@ -214,6 +214,36 @@ describe('ToolEngine', () => {
       assert.match(result.error, /Could not find/);
       cleanup(dir);
     });
+
+    it('correctly replaces mid-file text with whitespace-normalized matching (the slice-end bug)', async () => {
+      // Regression test for the bug where edit_file used old_string.length instead of the
+      // actual matched text length in the original content when using whitespace-normalized
+      // matching. If old_string has different whitespace (e.g., 4-space indent vs 2-space),
+      // old_string.length differs from the matched text length, causing the replacement to
+      // eat or leave extra characters after the match.
+      const { dir, engine } = createTestWorkspace();
+      // File uses 2-space indentation
+      const originalContent = [
+        'const x = 1;',
+        'function foo() {',
+        '  const y = 2;',    // 2-space indent
+        '}',
+        'const z = 3;',      // This line must be preserved after the edit
+      ].join('\n');
+      writeFileSync(join(dir, 'app.js'), originalContent, 'utf-8');
+
+      // LLM generates old_string with 4-space indentation and extra newline before brace
+      const result = await engine.execute('edit_file', {
+        path: 'app.js',
+        old_string: 'function foo()\n{\n    const y = 2;\n}',
+        new_string: 'function foo() {\n  const y = 42;\n}',
+      });
+      assert.equal(result.success, true);
+      const written = readFileSync(join(dir, 'app.js'), 'utf-8');
+      // The const z = 3; line must be preserved — the old bug would truncate it
+      assert.equal(written, 'const x = 1;\nfunction foo() {\n  const y = 42;\n}\nconst z = 3;');
+      cleanup(dir);
+    });
   });
 
   describe('write_file - broken JS string literal repair (the fishtank-app bug)', () => {
