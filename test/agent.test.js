@@ -400,12 +400,16 @@ describe('Agent — single tool call without test/finish (Issue 5 fix)', () => {
     const { dir, agent } = createTestAgent([
       // First LLM response: write a file but NO test_app or finish
       '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}',
-      // Second LLM response: write another file but still NO test_app or finish
-      '{"tool": "write_file", "arguments": {"path": "my-app/utils.js", "content": "export const add = (a, b) => a + b;"}}',
+      // Second LLM response: text-only (triggers re-prompt #1 — "you wrote code but did not test or finish")
+      'I wrote the app.js file. Let me continue.',
       // Third LLM response: write another file but still NO test_app or finish
+      '{"tool": "write_file", "arguments": {"path": "my-app/utils.js", "content": "export const add = (a, b) => a + b;"}}',
+      // Fourth LLM response: text-only (triggers re-prompt #2)
+      'I added the utils module.',
+      // Fifth LLM response: write another file but still NO test_app or finish
       '{"tool": "write_file", "arguments": {"path": "my-app/helper.js", "content": "export const greet = (name) => \\`Hello \\${name}\\`;"}}',
-      // Fourth LLM response: write another file — should force-end after 3 re-prompts
-      '{"tool": "write_file", "arguments": {"path": "my-app/extra.js", "content": "// extra"}}',
+      // Sixth LLM response: text-only (triggers re-prompt #3 — force-end)
+      'I added the helper module.',
     ]);
 
     await agent.startSession();

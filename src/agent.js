@@ -416,6 +416,42 @@ export class Agent {
           continue;
         }
 
+        // Detect: LLM responded with empty/whitespace-only text after create_directory,
+        // npm init, or test_app failure guidance. Some models (e.g., Qwen 3.5) sometimes
+        // stop generating entirely after receiving guidance — the response is empty or
+        // whitespace-only, which bypasses the `if (lastText)` guard below. We check for
+        // this BEFORE the `if (lastText)` guard so empty responses after guidance are caught.
+        // IMPORTANT: Only trigger for EMPTY/whitespace-only responses. Non-empty
+        // responses should fall through to the existing checks inside `if (lastText)`.
+        const lastSystemMsg = this.messages.slice().reverse().find(m => m.role === 'system');
+        const hasCreateDirGuidance = lastSystemMsg?.content?.includes('Directory created successfully') &&
+          lastSystemMsg.content.includes('write the main application source code file');
+        const hasNpmInitGuidance = lastSystemMsg?.content?.includes('Project initialized successfully') &&
+          lastSystemMsg.content.includes('write the main application entry point');
+        const hasTestAppFailureGuidance = lastSystemMsg?.content?.includes('called test_app() but you did NOT modify any code') &&
+          lastSystemMsg.content.includes('use read_file() to examine the source code');
+
+        if (!lastText && (hasCreateDirGuidance || hasNpmInitGuidance) && !this._hasWrittenEntryPoint) {
+          console.log('   ⚠️ Empty/whitespace-only response after create_directory/npm init guidance — re-prompting to use write_file()');
+          this.messages.push({
+            role: 'system',
+            content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+          });
+          continue;
+        }
+
+        // Detect: LLM responded with empty/whitespace-only text after test_app failure
+        // guidance. The LLM was told to fix the code but stopped generating entirely.
+        // Re-prompt it to use read_file() and edit_file() to fix the bug.
+        if (!lastText && hasTestAppFailureGuidance) {
+          console.log('   ⚠️ Empty/whitespace-only response after test_app failure guidance — re-prompting to fix the code');
+          this.messages.push({
+            role: 'system',
+            content: 'STOP responding with text. The app failed to run and you MUST fix it. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Do NOT explain what you will do — actually call read_file() first to see the code, then call edit_file() with the fix. After fixing, call test_app() to verify the fix works.',
+          });
+          continue;
+        }
+
         if (lastText) {
           // Detect fabricated placeholder responses — the model is making up info instead of using tools
           const placeholderPatterns = [
@@ -449,7 +485,8 @@ export class Agent {
           // we skip the finish() and inject guidance, but the LLM's next response
           // is text-only (no tool calls) — it explains how to use the app instead
           // of actually writing the source file.
-          const lastSystemMsg = this.messages.slice().reverse().find(m => m.role === 'system');
+          // Note: lastSystemMsg is already declared above (line 424) for the
+          // empty-response-after-guidance check — reuse it here.
           const hasFinishInterceptionGuidance = lastSystemMsg?.content?.includes('called finish() in the same response as npm init/install');
 
           if (hasFinishInterceptionGuidance) {
@@ -467,10 +504,9 @@ export class Agent {
           // calling write_file(). This is different from finish() interception —
           // the LLM never called finish(), it just stopped generating tool calls.
           // Re-prompt it to write the source code file.
-          const hasNpmInitGuidance = lastSystemMsg?.content?.includes('Project initialized successfully') &&
-            lastSystemMsg.content.includes('write the main application entry point');
-          const hasCreateDirGuidance = lastSystemMsg?.content?.includes('Directory created successfully') &&
-            lastSystemMsg.content.includes('write the main application source code file');
+          // Note: hasNpmInitGuidance and hasCreateDirGuidance are already declared
+          // above (lines 425-428) for the empty-response-after-guidance check —
+          // reuse them here.
 
           if ((hasNpmInitGuidance || hasCreateDirGuidance) && !this._hasWrittenEntryPoint) {
             console.log('   ⚠️ Text-only response after npm init/create_directory guidance — re-prompting to use write_file()');
@@ -1350,6 +1386,7 @@ Common issues:
     } else {
       this._hadWriteWithoutTestOrFinish = false;
     }
+    } // ← closes the while loop (4 spaces indent, matching line 358)
 
     return {
       finished,
@@ -1357,7 +1394,6 @@ Common issues:
       toolCalls: this.messages.filter(m => m.role === 'tool').length,
     };
   }
-}
 
   /**
    * End the session and print summary.

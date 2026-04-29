@@ -419,8 +419,8 @@ export class ToolEngine {
         params: ['format?'],
       },
       test_app: {
-        desc: 'Test the application by running it and checking for errors. Use this AFTER writing the source code to verify the app works. For apps that need command-line arguments, pass them in the "args" parameter (e.g., "London" for a weather app). Returns the app output or any error messages.',
-        params: ['args?'],
+        desc: 'Test the application by running it and checking for errors. Use this AFTER writing the source code to verify the app works. For apps that need command-line arguments, pass them in the "args" parameter (e.g., "London" for a weather app). Use cwd to specify which app directory to test when multiple apps exist. Returns the app output or any error messages.',
+        params: ['args?', 'cwd?'],
       },
       finish: {
         desc: 'Call this when the task is complete',
@@ -1591,13 +1591,10 @@ export class ToolEngine {
         return { success: true, output, data };
       },
 
-      test_app: async ({ args }) => {
-        // Find the entry point file in the current app directory.
-        // If _currentApp is not set (e.g., across sessions), scan the workdir
-        // for app directories. If exactly one is found, use it automatically.
-        // If multiple are found, return an error listing the available apps
-        // so the LLM can specify which one to test.
-        let appDir = this._currentApp;
+      test_app: async ({ args, cwd }) => {
+        // Determine which app directory to test.
+        // Priority: 1) cwd parameter (explicit), 2) _currentApp (auto-tracked), 3) scan workdir
+        let appDir = cwd || this._currentApp;
         if (!appDir) {
           const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
             .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('node_modules'));
@@ -1612,7 +1609,7 @@ export class ToolEngine {
             const appNames = apps.map(a => `"${a.name}"`).join(', ');
             return {
               success: false,
-              error: `Multiple app directories found: ${appNames}. Please specify which app to test by calling execute_command() with cwd="<app-name>" and running the app manually, e.g.: execute_command({"command":"node app.js","cwd":"<app-name>"})`,
+              error: `Multiple app directories found: ${appNames}. Please specify which app to test by using the cwd parameter, e.g.: test_app({"cwd":"<app-name>"}) or test_app({"args":"<app-args>","cwd":"<app-name>"})`,
             };
           }
         }
