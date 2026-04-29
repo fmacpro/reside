@@ -74,20 +74,31 @@ export function parseToolCalls(content) {
     result.toolCalls = [];
     lastIndex = 0;
 
-    // First, try parsing the ENTIRE content as a single JSON tool call.
+    // First, try parsing the ENTIRE content as a single JSON value.
     // This handles cases where the LLM outputs nothing but a JSON object
-    // with deeply nested content strings (e.g., write_file with JS code
-    // containing many levels of braces that would break the regex below).
+    // or array with deeply nested content strings (e.g., write_file with
+    // JS code containing many levels of braces that would break the regex).
+    //
+    // IMPORTANT: Only use JSON.parse directly here, NOT tryParseJson.
+    // tryParseJson uses tryParseWithTrailingGarbage which returns early
+    // when it finds the first balanced JSON structure. For content with
+    // multiple JSON objects separated by newlines (e.g., two tool calls),
+    // this would only capture the first one. The regex fallback below
+    // handles multiple JSON objects correctly.
     const trimmedContent = content.trim();
     if (trimmedContent.startsWith('{') || trimmedContent.startsWith('[')) {
-      const fullParsed = tryParseJson(trimmedContent);
-      if (fullParsed) {
-        const calls = extractToolCalls(fullParsed);
-        if (calls.length > 0) {
-          result.toolCalls.push(...calls);
-          result.text = '';
-          return result;
+      try {
+        const fullParsed = JSON.parse(trimmedContent);
+        if (fullParsed) {
+          const calls = extractToolCalls(fullParsed);
+          if (calls.length > 0) {
+            result.toolCalls.push(...calls);
+            result.text = '';
+            return result;
+          }
         }
+      } catch {
+        // Not valid JSON as a whole — fall through to regex-based extraction
       }
     }
 
