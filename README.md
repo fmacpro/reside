@@ -179,129 +179,23 @@ Configuration is stored in `~/.config/reside/config.json`. You can also use envi
 
 ## Available Tools
 
-The LLM has access to these tools:
+The LLM has access to 12 built-in tools. See the full [Tools Reference](docs/tools.md) for detailed documentation, parameters, examples, and behavior for each tool.
 
 | Tool                                      | Description                                                                                              |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `read_file(path)`                         | Read the contents of a file                                                                              |
-| `write_file(path, content)`               | Create a NEW file with content (creates directories if needed)                                           |
-| `edit_file(path, old_string, new_string)` | Edit an EXISTING file by replacing text (use `write_file` for new files)                                 |
-| `list_files(path)`                        | List files and directories in a path                                                                     |
-| `search_files(path, regex, file_pattern)` | Search for patterns in files using regex                                                                 |
-| `create_directory(path)`                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
-| `execute_command(command, cwd?)`          | Run a shell command (defaults to workdir root; use `cwd` to run inside an app directory like `"my-app"`). CLI/TUI apps (`node app.js`) run with a 5s timeout. Server commands (`npm start`, `npm run dev`) are blocked — the LLM tells you the command to run instead. |
-| `delete_file(path)`                       | Delete a file or directory                                                                               |
-| `search_web(query)`                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
-| `fetch_url(url, useBrowser?)`             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
-| `get_current_time(format?)`               | Get the current system date/time. Formats: "full" (default), "date", "time", "day", "month", "year", "timestamp" |
-| `finish(message)`                         | Signal that a task is complete                                                                           |
-
-### Web Search
-
-The `search_web(query)` tool uses [DuckDuckGo](https://html.duckduckgo.com/html/) — a free, privacy-respecting search engine that requires **no API key** and **no registration**. Results are returned as structured data (title, snippet, URL) for the LLM to use.
-
-**How the LLM uses it:**
-```
-💬 > what is the current price of bitcoin
-
-🔧 search_web("current price of bitcoin")
-   ✅ Found 5 results
-
-🤖 The current price of Bitcoin is $76,711.52 USD as of the time this information was fetched.
-
-If you'd like to see more detailed information or the full article, please let me know!
-```
-
-```
-💬 > how many children does Donald Trump have
-
-🔧 search_web("Donald Trump's children")
-   ✅ Found 5 results
-
-🤖 Donald Trump has five children:
-
-1. Donald Jr.
-2. Ivanka
-3. Eric
-4. Tiffany
-5. Barron
-
-If you'd like to see more detailed information or the full article, please let me know!
-```
-
-The tool uses **Puppeteer** with the `puppeteer-extra-plugin-stealth` plugin to bypass bot detection. It launches a headless Chrome browser with a desktop viewport, navigates to DuckDuckGo HTML, and extracts results from the rendered page. Ads are automatically filtered out, and redirect URLs are resolved to their real destinations.
-
-`search_web` also follows the top result links to fetch actual article content (titles and summaries), so the LLM gets rich information directly from search results without needing a separate `fetch_url` call.
-
-> **Note:** `search_web` requires Google Chrome to be installed on your system. The default Chrome path is `/usr/bin/google-chrome`. You can modify the `executablePath` in [`src/search.js`](src/search.js:26) if Chrome is installed elsewhere.
-
-### Web Search + Fetch Workflow
-
-The `search_web` and `fetch_url` tools work together to give the LLM access to current web content:
-
-1. **Search** — `search_web("query")` returns a list of results with titles, snippets, and URLs (already fetched from the source pages)
-2. **Fetch** — `fetch_url("https://...")` retrieves the full article content from a specific URL when the user asks for more detail
-
-**Example workflow:**
-```
-💬 > What's the latest news about Node.js?
-
-🔧 search_web({"query":"Node.js latest news 2026"})
-   ✅ Found 3 results
-   1. Node.js 24 Released with New Features
-      Node.js 24 brings significant performance improvements...
-      https://nodejs.org/en/blog/release/v24
-   2. Node.js 22.x LTS Now Available
-      ...
-
-🤖 Node.js 24 has been released with V8 12.4, better ESM support...
-```
-
-The LLM presents search results directly — it does **not** call `fetch_url` on search results since `search_web` already fetches article content. `fetch_url` is only used when the user explicitly asks for the full text of a specific article.
-
-### Fetch URL
-
-The `fetch_url(url)` tool fetches a web page and extracts its main article content using a heuristic content detection algorithm adapted from [horseman-article-parser](https://github.com/fmacpro/horseman-article-parser). It:
-
-- **Strips boilerplate** — Removes navigation, headers, footers, sidebars, ads, cookie notices, and other non-content elements
-- **Detects the main content** — Uses a scoring system that evaluates text density, paragraph structure, link density, and semantic HTML elements (`<article>`, `<main>`, `[role="main"]`)
-- **Preserves structure** — Outputs clean text with headings, lists, blockquotes, and code blocks formatted for readability
-- **Zero dependencies** — Uses only Node.js built-in `http`/`https` modules and a lightweight custom HTML parser
-- **Optional browser rendering** — For JavaScript-heavy pages (SPAs, dynamic content), pass `useBrowser=true` to render with Puppeteer before extraction
-- **Automatic fallback** — If the HTTP request is blocked with 403/401/429 (Cloudflare, bot protection), it automatically retries using Puppeteer with stealth plugins
-
-**How it works internally (default HTTP mode):**
-1. Fetches the page HTML via HTTPS with a browser-like User-Agent
-2. Parses the HTML into a lightweight DOM tree (no JSDOM needed)
-3. Gathers candidate content containers using positive selectors (`<article>`, `<main>`, content class patterns like `.post-content`, `.entry-content`, `#article`)
-4. Scores each candidate using heuristic features (text length, paragraph count, link density, presence of semantic tags like `<h1>`–`<h6>`, `<p>`, `<ul>`, `<blockquote>`)
-5. Selects the highest-scoring candidate and strips negative containers (nav, footer, aside, script, style, `.comment`, `.sidebar`, `.ad`)
-6. Returns the best candidate as clean formatted text with structural spacing
-
-**Browser mode (`useBrowser=true` or automatic fallback):**
-1. Launches a headless Chrome browser via Puppeteer (shared instance with `search_web`)
-2. Detects and waits for Cloudflare challenges to resolve (checks page title, body text, and DOM selectors for challenge indicators like "Just a moment", "Checking your browser")
-3. Renders the page with JavaScript enabled, waiting for dynamic content to load
-4. Extracts text using a heuristic scoring algorithm on the rendered DOM (same algorithm as HTTP mode, but operating on the live DOM)
-5. Falls back to `document.body.innerText` if heuristic extraction yields fewer than 200 characters (handles JS-heavy SPAs that don't use semantic HTML)
-6. Strips hidden elements, scripts, styles, nav, footer, and header
-7. Returns clean text with structural spacing preserved
-
-### Get Current Time
-
-The `get_current_time(format?)` tool returns the current system date and time using Node.js built-in `Date` and `Intl.DateTimeFormat` APIs. It supports multiple output formats:
-
-| Format        | Example output                              |
-| ------------- | ------------------------------------------- |
-| `"full"`      | `Monday, 27 April 2026 at 20:35:36 British Summer Time (Europe/London, unix: 1777318536)` |
-| `"date"`      | `2026-04-27`                                |
-| `"time"`      | `20:35:36`                                  |
-| `"day"`       | `Monday`                                    |
-| `"month"`     | `April`                                     |
-| `"year"`      | `2026`                                      |
-| `"timestamp"` | `1777318536`                                |
-
-The LLM automatically selects the appropriate format based on the question (e.g., "what time is it?" → `"time"`, "what's the date?" → `"date"`). Structured data with all fields is always returned regardless of format.
+| [`read_file(path)`](docs/tools.md#read_filepath)                         | Read the contents of a file                                                                              |
+| [`write_file(path, content)`](docs/tools.md#write_filepath-content)               | Create a NEW file with content (creates directories if needed)                                           |
+| [`edit_file(path, file_path, new_string)`](docs/tools.md#edit_filepath-file_path-new_string) | Edit an EXISTING file by replacing text (use `write_file` for new files)                                 |
+| [`list_files(path)`](docs/tools.md#list_filespath)                        | List files and directories in a path                                                                     |
+| [`search_files(path, regex, file_pattern)`](docs/tools.md#search_filespath-regex-file_pattern) | Search for patterns in files using regex                                                                 |
+| [`create_directory(path)`](docs/tools.md#create_directorypath)                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
+| [`execute_command(command, cwd?)`](docs/tools.md#execute_commandcommand-cwd)          | Run a shell command with timeout and auto-cwd                                                             |
+| [`delete_file(path)`](docs/tools.md#delete_filepath)                       | Delete a file or directory                                                                               |
+| [`search_web(query)`](docs/tools.md#search_webquery)                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
+| [`fetch_url(url, useBrowser?)`](docs/tools.md#fetch_urlurl-usebrowser)             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
+| [`get_current_time(format?)`](docs/tools.md#get_current_timeformat)               | Get the current system date/time in various formats                                                      |
+| [`test_app(args?, cwd?)`](docs/tools.md#test_appargs-cwd)                   | Test the application by running it and checking for errors                                               |
+| [`finish(message)`](docs/tools.md#finishmessage)                         | Signal that a task is complete                                                                           |
 
 ## Debug Mode
 
