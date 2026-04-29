@@ -166,9 +166,13 @@ export class Agent {
     // Track how many times the LLM has been re-prompted to use edit_file() after reading
     // a file. If the LLM ignores the re-prompt and calls execute_command (testing the app)
     // instead of edit_file (fixing the code), we intercept and re-prompt again.
-    // After 2 re-prompts, force-end the session — the LLM is stuck in a read-only loop.
+    // After 3 re-prompts, force-end the session — the LLM is stuck in a read-only loop.
+    // Set to 3 so the LLM gets 2 chances after the initial text-only re-prompt:
+    //   #1 = text-only response after read_file (re-prompt to use edit_file)
+    //   #2 = non-editing tool call after re-prompt (re-prompt again)
+    //   #3 = final chance — if still not editing, force-end
     this._readFileRepromptCount = 0;
-    this._maxReadFileReprompts = 2;
+    this._maxReadFileReprompts = 3;
 
     // Track whether any source files were written in this session.
     // Used to detect when the LLM calls finish() without writing any code.
