@@ -129,10 +129,17 @@ export function parseToolCalls(content) {
 /**
  * Try to parse a JSON string, returning null on failure.
  * First attempts standard JSON.parse, then tries to repair common LLM mistakes.
+ *
+ * Also handles trailing garbage after valid JSON (e.g., extra `}` or `]`
+ * that the regex captured). It progressively trims trailing characters
+ * that would make JSON invalid.
+ *
  * @param {string} str
  * @returns {any|null}
  */
 function tryParseJson(str) {
+  if (!str || typeof str !== 'string') return null;
+
   // First attempt: standard JSON.parse
   try {
     return JSON.parse(str);
@@ -140,13 +147,123 @@ function tryParseJson(str) {
     // Fall through to repair attempts
   }
 
-  // Second attempt: repair common LLM JSON mistakes
+  // Second attempt: handle trailing garbage after valid JSON.
+  // The regex may capture extra characters like `}}}]` when the LLM
+  // outputs malformed JSON with extra braces. We progressively trim
+  // trailing characters that would make JSON invalid.
+  const trimmed = tryParseWithTrailingGarbage(str);
+  if (trimmed !== null) return trimmed;
+
+  // Third attempt: repair common LLM JSON mistakes
   const repaired = repairJson(str);
   if (repaired !== null) {
     try {
       return JSON.parse(repaired);
     } catch {
-      return null;
+      // Also try with trailing garbage handling on the repaired string
+      return tryParseWithTrailingGarbage(repaired);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Try to parse JSON by extracting the valid portion using brace/bracket
+ * matching. This handles cases where the regex captured extra trailing
+ * characters like an extra `}` before `]` (e.g., `...}}}]` instead of
+ * `...}}]`).
+ *
+ * Strategy: walk through the string character by character, tracking
+ * brace/bracket depth and respecting string boundaries. Build the valid
+ * JSON string by only including characters that contribute to balanced
+ * braces/brackets. Extra closing braces/brackets (when depth is 0) are
+ * excluded from the result.
+ *
+ * @param {string} str
+ * @returns {any|null}
+ */
+function tryParseWithTrailingGarbage(str) {
+  if (!str) return null;
+
+  // Find the start of the JSON structure
+  let start = -1;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (ch === '{' || ch === '[') {
+      start = i;
+      break;
+    }
+    // Skip leading whitespace
+    if (!/\s/.test(ch)) break;
+  }
+  if (start === -1) return null;
+
+  // Walk forward from start, building valid JSON by tracking depth.
+  // Extra closing braces/brackets (when depth is 0) are excluded.
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let inString = false;
+  let escape = false;
+  let result = '';
+
+  for (let i = start; i < str.length; i++) {
+    const ch = str[i];
+
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === '\\') {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      result += ch;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      result += ch;
+      continue;
+    }
+
+    if (ch === '{') {
+      braceDepth++;
+      result += ch;
+    } else if (ch === '}') {
+      if (braceDepth > 0) {
+        braceDepth--;
+        result += ch;
+        if (braceDepth === 0 && bracketDepth === 0) {
+          // Successfully parsed valid JSON
+          try {
+            return JSON.parse(result);
+          } catch {
+            // Even though depth is 0, JSON is invalid — continue
+            // looking for a longer valid match
+          }
+        }
+      }
+      // If braceDepth is 0, this is an extra closing brace — skip it
+    } else if (ch === '[') {
+      bracketDepth++;
+      result += ch;
+    } else if (ch === ']') {
+      if (bracketDepth > 0) {
+        bracketDepth--;
+        result += ch;
+        if (braceDepth === 0 && bracketDepth === 0) {
+          try {
+            return JSON.parse(result);
+          } catch {
+            // Continue looking
+          }
+        }
+      }
+      // If bracketDepth is 0, this is an extra closing bracket — skip it
+    } else {
+      result += ch;
     }
   }
 
