@@ -451,6 +451,12 @@ export class Agent {
           lastSystemMsg.content.includes('write the main application entry point');
         const hasTestAppFailureGuidance = lastSystemMsg?.content?.includes('called test_app() but you did NOT modify any code') &&
           lastSystemMsg.content.includes('use read_file() to examine the source code');
+        // Detect: LLM responded with text-only after a known runtime error was injected
+        // (e.g., SyntaxError, TypeError). The agent injects guidance telling the LLM to
+        // use read_file() and edit_file() to fix the code, but the LLM often responds
+        // with text-only explaining what to fix instead of actually calling the tools.
+        const hasRuntimeErrorGuidance = lastSystemMsg?.content?.includes('The application code has a runtime error') &&
+          lastSystemMsg.content.includes('use read_file() to examine the source code');
 
         if (!lastText && (hasCreateDirGuidance || hasNpmInitGuidance) && !this._hasWrittenEntryPoint) {
           console.log('   ⚠️ Empty/whitespace-only response after create_directory/npm init guidance — re-prompting to use write_file()');
@@ -534,6 +540,20 @@ export class Agent {
             this.messages.push({
               role: 'system',
               content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+            });
+            continue;
+          }
+
+          // Detect: LLM responded with text-only after a runtime error was injected
+          // (e.g., SyntaxError, TypeError from test_app or node app.js). The agent
+          // injected guidance telling the LLM to use read_file() and edit_file() to
+          // fix the code, but the LLM often responds with text-only explaining what
+          // to fix instead of actually calling the tools. Re-prompt it to act.
+          if (hasRuntimeErrorGuidance) {
+            console.log('   ⚠️ Text-only response after runtime error guidance — re-prompting to use read_file() and edit_file()');
+            this.messages.push({
+              role: 'system',
+              content: 'STOP responding with text. The application has a runtime error and you MUST fix it. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Do NOT explain what you will do — actually call read_file() first to see the code, then call edit_file() with the fix. After fixing, call test_app() to verify the fix works.',
             });
             continue;
           }
