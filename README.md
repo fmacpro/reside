@@ -121,24 +121,58 @@ $ node src/index.js --chat
 
 Interactive mode. Type your messages or commands:
 
-💬 > Create a simple HTML page called index.html in a new app called my-site
+💬 > What time is it?
 
-🔧 create_directory({"path":"my-site"})
-   ✅ Created directory: my-site
+🔧 get_current_time({"format":"full"})
+   ✅ Monday, 28 April 2026 at 10:15:42 British Summer Time (Europe/London, unix: 1777356942)
 
-🔧 write_file({"path":"my-site/index.html","content":"<!DOCTYPE html>..."})
-   ✅ Written 142 bytes to my-site/index.html
+🤖 It's Monday, 28 April 2026, 10:15:42 BST (Europe/London).
 
-🔧 finish({"message":"Created my-site with index.html"})
-   ✅ Created my-site with index.html
+💬 > What's the current price of bitcoin?
 
-💬 > Now add a CSS file to style it
+🔧 search_web({"query":"current bitcoin price USD"})
+   ✅ Found 5 results
 
-🔧 write_file({"path":"my-site/style.css","content":"body { font-family: sans-serif; }"})
-   ✅ Written 32 bytes to my-site/style.css
+🤖 The current price of Bitcoin is approximately $76,711.52 USD as of the latest data.
 
-🔧 finish({"message":"Added style.css"})
-   ✅ Added style.css
+💬 > Create a weather CLI app that takes a city name and shows the temperature
+
+🔧 create_directory({"path":"weather-cli"})
+   ✅ Directory created
+
+🔧 write_file({"path":"weather-cli/app.js","content":"import https from 'node:https';\nconst city = process.argv[2] || 'London';\nconst url = `https://wttr.in/${city}?format=%t+%C`;\nhttps.get(url, res => {\n  let data = '';\n  res.on('data', c => data += c);\n  res.on('end', () => console.log(`${city}: ${data.trim()}`));\n});"})
+   ✅ Written 278 bytes to weather-cli/app.js
+
+🔧 test_app({"args":"London"})
+   ✅ London: +12°C Partly cloudy
+
+🔧 finish({"message":"Created weather-cli app that shows temperature for any city"})
+   ✅ Created weather-cli app that shows temperature for any city
+
+💬 > Now modify it to also show the humidity
+
+🔧 read_file({"path":"weather-cli/app.js"})
+   ✅ Read 278 bytes
+
+🔧 edit_file({"file_path":"weather-cli/app.js","new_string":"const url = `https://wttr.in/${city}?format=%t+%C+%h`;\nhttps.get(url, res => {\n  let data = '';\n  res.on('data', c => data += c);\n  res.on('end', () => {\n    const [temp, condition, humidity] = data.trim().split(' ');\n    console.log(`${city}: ${temp}, ${condition}, Humidity: ${humidity}`);\n  });\n});"})
+   ✅ Edited weather-cli/app.js
+
+🔧 test_app({"args":"London"})
+   ✅ London: +12°C, Partly cloudy, Humidity: 65%
+
+🔧 finish({"message":"Updated weather-cli to show temperature, conditions, and humidity"})
+   ✅ Updated weather-cli to show temperature, conditions, and humidity
+
+💬 > /summary
+
+📊 Session Summary:
+   Iterations: 8
+   Messages: 28
+   Workdir: /home/user/reside/workdir
+   Apps in workdir:
+     📜 weather-cli
+        abc1234 Iteration 1: create_directory, write_file, test_app, finish
+        def5678 Iteration 2: read_file, edit_file, test_app, finish
 
 💬 > /exit
 ```
