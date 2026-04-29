@@ -161,6 +161,12 @@ export class Agent {
     // Used to detect when the LLM calls finish() without writing any code.
     this._hasWrittenSourceFile = false;
 
+    // Track whether the LLM has used any file-creation tools (write_file, edit_file,
+    // create_directory) in this session. If the LLM has ONLY used information-retrieval
+    // tools (search_web, fetch_url, get_current_time) and calls finish(), it's a
+    // question-answering session — allow finish() to proceed without interception.
+    this._hasUsedFileCreationTools = false;
+
     // Track whether any CODE source files (e.g., .js, .ts, .py) have been
     // written, as opposed to data files (e.g., .json, .csv, .txt). The LLM
     // sometimes writes a data file like recipes.json but still hasn't written
@@ -468,11 +474,13 @@ export class Agent {
           }
         }
 
-        // Detect: calling create_directory on a top-level app directory that was already
-        // created in this session. Subdirectories within an app (e.g., "time-app/assets/")
-        // are allowed freely. Only top-level directories (direct children of workdir)
-        // are tracked to prevent the LLM from creating the same app directory twice.
+        // Track that the LLM has used file-creation tools (write_file, edit_file,
+        // create_directory). This is used to differentiate between question-answering
+        // sessions (only search_web/fetch_url/get_current_time) and app-building sessions.
         if (tc.tool === 'create_directory') {
+          this._hasUsedFileCreationTools = true;
+
+          // Detect: calling create_directory on a top-level app directory that was already
           const dirPath = tc.arguments?.path || '';
           // Only track top-level directories (no '/' in path, or single segment)
           const isTopLevel = !dirPath.includes('/');
@@ -492,6 +500,20 @@ export class Agent {
           }
           if (isTopLevel) {
             this._createdDirs.add(dirPath);
+          }
+
+          // After creating a top-level app directory, proactively guide the LLM
+          // to write source files next. Some models (e.g., Qwen 3.5) tend to
+          // create the directory and then stop or respond with text instead of
+          // writing code. This guidance is injected BEFORE the LLM's next turn
+          // to prevent that. Qwen 2.5 Coder is unaffected because it already
+          // writes code after create_directory — the guidance is harmless since
+          // it just reinforces what the model was going to do anyway.
+          if (isTopLevel && !this._hasWrittenEntryPoint) {
+            this.messages.push({
+              role: 'system',
+              content: 'Directory created successfully. Now you MUST write the main application source code file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the source code file first.',
+            });
           }
         }
 
@@ -624,6 +646,7 @@ export class Agent {
           // Used to detect when the LLM calls finish() without writing any code.
           if (tc.tool === 'write_file' || tc.tool === 'edit_file') {
             this._hasWrittenSourceFile = true;
+            this._hasUsedFileCreationTools = true;
             // Track that code was modified since the last test_app call.
             // This is used to detect when the LLM retries test_app() without
             // fixing the code — if test_app is called twice without any code
@@ -866,9 +889,14 @@ export class Agent {
             ? (result.output || '(completed successfully)')
             : `Error: ${result.error}`;
 
+          // Strip unknown/extra arguments that the LLM may have hallucinated
+          // (e.g., Qwen 3.5 adding "createRequire" to write_file calls).
+          // This prevents hallucinated params from being echoed back in tool
+          // results, which would reinforce the hallucination in the LLM's context.
+          const cleanArgs = this.toolEngine.stripUnknownArgs(tc.tool, tc.arguments);
           const toolResult = {
             tool: tc.tool,
-            arguments: tc.arguments,
+            arguments: cleanArgs,
             result: result.success ? 'success' : 'error',
             output: resultContent,
           };
@@ -882,6 +910,17 @@ export class Agent {
           });
 
           if (tc.tool === 'finish') {
+            // If the LLM has ONLY used information-retrieval tools (search_web,
+            // fetch_url, get_current_time) and NO file-creation tools (write_file,
+            // edit_file, create_directory), this is a question-answering session.
+            // Allow finish() to proceed without requiring an entry point — the user
+            // asked a question, not a request to build an app.
+            if (!this._hasUsedFileCreationTools) {
+              finished = true;
+              console.log(`\n✅ ${result.output}`);
+              break;
+            }
+
             // If the LLM calls finish() without ever writing a recognized entry
             // point file (e.g., app.js, index.js, server.js), intercept it and
             // inject guidance instead of ending the session. The LLM often writes

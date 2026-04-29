@@ -56,6 +56,37 @@ export class ToolEngine {
   }
 
   /**
+   * Strip unknown/extra arguments from a tool call that are not in the tool's
+   * parameter list. Some models (e.g., Qwen 3.5) hallucinate extra parameters
+   * like "createRequire" in write_file calls — these should be silently removed
+   * rather than passed to the handler or echoed back in tool results.
+   *
+   * This is a public method so the agent can also use it when building tool
+   * result messages — ensuring hallucinated params are never echoed back to
+   * the LLM (which would reinforce the hallucination).
+   *
+   * @param {string} tool - Tool name
+   * @param {Object} args - Tool arguments
+   * @returns {Object} The filtered arguments object
+   */
+  stripUnknownArgs(tool, args) {
+    if (!args || typeof args !== 'object') return args;
+    const defs = this._getDefinitions();
+    const def = defs[tool];
+    if (!def) return args;
+
+    // Extract valid parameter names (strip trailing '?' for optional params)
+    const validParams = new Set(def.params.map(p => p.replace(/\?$/, '')));
+    const filtered = {};
+    for (const [key, value] of Object.entries(args)) {
+      if (validParams.has(key)) {
+        filtered[key] = value;
+      }
+    }
+    return filtered;
+  }
+
+  /**
    * Execute a tool call.
    * @param {string} tool - Tool name
    * @param {Object} args - Tool arguments
@@ -71,7 +102,13 @@ export class ToolEngine {
     }
 
     try {
-      return await handler(args);
+      // Strip unknown/extra arguments that the LLM may have hallucinated.
+      // This prevents models like Qwen 3.5 from passing invalid params
+      // like "createRequire" to write_file, and also prevents those extra
+      // params from being echoed back in tool results (which would reinforce
+      // the hallucination).
+      const cleanArgs = this.stripUnknownArgs(tool, args);
+      return await handler(cleanArgs);
     } catch (err) {
       return { success: false, error: `Error executing "${tool}": ${err.message}` };
     }
