@@ -85,20 +85,37 @@ export function parseToolCalls(content) {
     // multiple JSON objects separated by newlines (e.g., two tool calls),
     // this would only capture the first one. The regex fallback below
     // handles multiple JSON objects correctly.
+    //
+    // However, we DO attempt repairJson first if JSON.parse fails, since
+    // the LLM may output raw backticks or invalid escape sequences inside
+    // JSON string values (e.g., JavaScript template literals in code content).
+    // repairJson handles these cases without the early-return issue of
+    // tryParseWithTrailingGarbage.
     const trimmedContent = content.trim();
     if (trimmedContent.startsWith('{') || trimmedContent.startsWith('[')) {
+      // Try direct JSON.parse first
+      let fullParsed = null;
       try {
-        const fullParsed = JSON.parse(trimmedContent);
-        if (fullParsed) {
-          const calls = extractToolCalls(fullParsed);
-          if (calls.length > 0) {
-            result.toolCalls.push(...calls);
-            result.text = '';
-            return result;
+        fullParsed = JSON.parse(trimmedContent);
+      } catch {
+        // Direct parse failed — try repairing common LLM mistakes
+        const repaired = repairJson(trimmedContent);
+        if (repaired !== null) {
+          try {
+            fullParsed = JSON.parse(repaired);
+          } catch {
+            // Repair didn't help either — fall through
           }
         }
-      } catch {
-        // Not valid JSON as a whole — fall through to regex-based extraction
+      }
+      
+      if (fullParsed) {
+        const calls = extractToolCalls(fullParsed);
+        if (calls.length > 0) {
+          result.toolCalls.push(...calls);
+          result.text = '';
+          return result;
+        }
       }
     }
 
@@ -290,9 +307,15 @@ function tryParseWithTrailingGarbage(str) {
  * 2. Trailing commas in objects/arrays
  * 3. Single quotes instead of double quotes for property names/string values
  * 4. Missing quotes around property names
+ * 5. Invalid escape sequences inside JSON strings (e.g., \` and \$)
+ *    The LLM sometimes outputs JavaScript template literal escapes inside
+ *    JSON string values, like:
+ *      {"content": "reject(new Error(\`API failed with status \${code}\`));"}
+ *    Here \` and \$ are NOT valid JSON escape sequences.
  *
  * Strategy: extract the JSON structure, find backtick-delimited values,
- * and convert them to properly escaped JSON strings.
+ * and convert them to properly escaped JSON strings. Then fix invalid
+ * escape sequences inside regular JSON strings.
  *
  * @param {string} str
  * @returns {string|null}
@@ -302,10 +325,51 @@ function repairJson(str) {
 
   let result = str;
 
-  // Fix 1: Replace single quotes with double quotes for property names
-  // e.g., {'tool': 'value'} -> {"tool": "value"}
-  // But be careful not to break apostrophes inside strings
-  result = result.replace(/'/g, '"');
+  // Fix 1: Replace single quotes with double quotes, but ONLY for single quotes
+  // that are used as JSON string delimiters (outside double-quoted JSON strings).
+  // Single quotes INSIDE double-quoted JSON string values (e.g., in JavaScript code
+  // content like "import https from 'https'") must NOT be converted, as that would
+  // introduce unescaped double quotes that break the JSON structure.
+  //
+  // Strategy: Walk through the string tracking whether we're inside a double-quoted
+  // JSON string. Only replace single quotes found OUTSIDE double-quoted strings.
+  {
+    let fixedResult = '';
+    let inJsonString = false;
+    let escape = false;
+    
+    for (let i = 0; i < result.length; i++) {
+      const ch = result[i];
+      
+      if (escape) {
+        escape = false;
+        fixedResult += ch;
+        continue;
+      }
+      
+      if (ch === '\\' && inJsonString) {
+        escape = true;
+        fixedResult += ch;
+        continue;
+      }
+      
+      if (ch === '"') {
+        inJsonString = !inJsonString;
+        fixedResult += ch;
+        continue;
+      }
+      
+      if (ch === "'" && !inJsonString) {
+        // Single quote outside a JSON string — convert to double quote
+        fixedResult += '"';
+        continue;
+      }
+      
+      fixedResult += ch;
+    }
+    
+    result = fixedResult;
+  }
 
   // Fix 2: Remove trailing commas before closing braces/brackets
   result = result.replace(/,(\s*[}\]])/g, '$1');
@@ -315,39 +379,50 @@ function repairJson(str) {
   //   {"tool": "write_file", "arguments": {"path": "x", "content": `code here`}}
   // This is invalid JSON because backticks are not valid string delimiters.
   //
-  // Strategy: Find backtick-delimited values and convert them to JSON strings.
-  // We need to handle:
-  //   - Simple backtick strings: `hello` -> "hello"
-  //   - Multi-line backtick strings: `line1\nline2` -> "line1\nline2"
-  //   - Backtick strings with ${} interpolation: `${x}` -> must escape the ${
+  // However, backticks can ALSO appear INSIDE double-quoted JSON string values
+  // when the LLM includes JavaScript template literals in code content:
+  //   {"content": "reject(new Error(`API failed with status ${code}`));"}
+  // In this case, the backticks are literal characters inside a JSON string,
+  // NOT JSON string delimiters.
   //
-  // The approach: find the outermost JSON object structure, then within it,
-  // replace backtick-delimited sections with properly escaped double-quoted strings.
+  // Strategy: Walk through the string tracking whether we're inside a
+  // double-quoted JSON string. Backticks found OUTSIDE double-quoted strings
+  // are treated as JSON string delimiters and converted to double-quoted strings.
+  // Backticks found INSIDE double-quoted strings are escaped as \` to make
+  // them valid JSON.
 
   // First, check if there are backtick strings that need conversion
   if (result.includes('`')) {
-    // We need to be smart about this. The structure is typically:
-    // {"tool": "name", "arguments": {"key": `value`}}
-    // We'll convert backtick-delimited content to JSON strings.
-    
-    // Find all backtick-delimited sections and replace them
-    // A backtick string starts after a colon+space and ends before a comma, brace, or bracket
-    // But multi-line backtick strings can contain anything including commas and braces.
-    // So we need to match balanced backticks.
-    
     let backtickResult = '';
     let i = 0;
     let inBacktick = false;
     let backtickStart = -1;
+    let inJsonString = false;
+    let escape = false;
     
     while (i < result.length) {
       const ch = result[i];
-      if (ch === '`' && !inBacktick) {
+      
+      // Track whether we're inside a double-quoted JSON string
+      if (!inBacktick) {
+        if (escape) {
+          escape = false;
+        } else if (ch === '\\' && inJsonString) {
+          escape = true;
+        } else if (ch === '"' && !inJsonString) {
+          inJsonString = true;
+        } else if (ch === '"' && inJsonString) {
+          inJsonString = false;
+        }
+      }
+      
+      if (ch === '`' && !inBacktick && !inJsonString) {
+        // Backtick found OUTSIDE a JSON string — treat as JSON string delimiter
         inBacktick = true;
         backtickStart = i;
         i++;
       } else if (ch === '`' && inBacktick) {
-        // End of backtick string
+        // End of backtick-delimited string
         const rawContent = result.slice(backtickStart + 1, i);
         // Escape the content for JSON: escape backslashes, double quotes, newlines, tabs
         let escaped = rawContent
@@ -357,10 +432,12 @@ function repairJson(str) {
           .replace(/\r/g, '\\r')
           .replace(/\t/g, '\\t');
         // Note: ${} is valid inside a JSON string value, so we do NOT escape it.
-        // The only issue was the backtick delimiter, which we're converting to double quotes.
-        // Escaping $ would produce \$ which is NOT a valid JSON escape sequence.
         backtickResult += '"' + escaped + '"';
         inBacktick = false;
+        i++;
+      } else if (ch === '`' && !inBacktick && inJsonString) {
+        // Backtick found INSIDE a JSON string — escape it as \`
+        backtickResult += '\\`';
         i++;
       } else if (inBacktick) {
         // Skip characters inside backtick — they'll be captured by slice above
@@ -376,6 +453,62 @@ function repairJson(str) {
     }
     // If we're still in a backtick (unclosed), return null — can't repair
   }
+
+  // Fix 4: Fix invalid escape sequences inside JSON strings.
+  // The LLM sometimes outputs JavaScript template literal escapes inside
+  // JSON string values, like:
+  //   {"content": "reject(new Error(\`API failed with status \${code}\`));"}
+  // Here \` (escaped backtick) and \$ (escaped dollar sign) are NOT valid
+  // JSON escape sequences. JSON only allows: \" \\ \/ \b \f \n \r \t \uXXXX
+  //
+  // Strategy: Walk through the string character by character, tracking
+  // when we're inside a JSON string (between double quotes). When we find
+  // a backslash followed by an invalid escape character (like ` or $),
+  // remove the backslash to produce the literal character.
+  //
+  // Valid JSON escape sequences:
+  //   \" \\ \/ \b \f \n \r \t \uXXXX
+  const VALID_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u']);
+  
+  let fixedResult = '';
+  let inString = false;
+  let escape = false;
+  
+  for (let i = 0; i < result.length; i++) {
+    const ch = result[i];
+    
+    if (escape) {
+      // We're after a backslash inside a string
+      escape = false;
+      if (inString && !VALID_ESCAPES.has(ch)) {
+        // Invalid escape sequence — remove the backslash, keep the character
+        // e.g., \` -> `, \$ -> $
+        fixedResult += ch;
+      } else {
+        // Valid escape — keep both backslash and character
+        fixedResult += '\\' + ch;
+      }
+      continue;
+    }
+    
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+    
+    if (ch === '"' && !escape) {
+      inString = !inString;
+    }
+    
+    fixedResult += ch;
+  }
+  
+  // If we were in an escape sequence at the end, add the backslash back
+  if (escape) {
+    fixedResult += '\\';
+  }
+  
+  result = fixedResult;
 
   return result;
 }
