@@ -153,6 +153,8 @@ Available tools:
 - read_file(path) - Read file contents
 - write_file(path, content) - Write/create NEW files (creates dirs if needed). Use this to create files.
 - edit_file(path, new_string) - Edit an EXISTING file by replacing text. Provide ONLY the new code with enough surrounding context (e.g., the function signature) so the tool can locate the right section using diff-based matching. Do NOT include old_string — the tool automatically finds the best match using diff-based matching. old_string is NOT a valid parameter and will be ignored. Do NOT use this to create new files — use write_file instead.
+
+IMPORTANT: When modifying an existing app, you MUST first use read_file() to read the FULL source code. Then identify ALL the changes needed (e.g., adding a new parameter to an API call AND updating the display section to show the new data). Make ALL changes in a single edit_file() call if possible, or make multiple targeted edit_file() calls — one for each section that needs changing. Do NOT make partial changes (e.g., updating the API call but forgetting to update the display). Read the full file first, plan all changes, then execute them all.
 - list_files(path) - List directory contents
 - search_files(path, regex, file_pattern) - Regex search across files
 - create_directory(path) - Create a directory (and parents if needed)

@@ -244,6 +244,12 @@ export class Agent {
     // code — force-end the session.
     this._hasModifiedCodeSinceLastTest = false;
 
+    // Track how many times the LLM has been re-prompted to fix code after
+    // calling test_app() without making changes. After 3 re-prompts, force-end
+    // the session — the LLM is stuck in a retry loop and won't fix the code.
+    this._testAppRetryCount = 0;
+    this._maxTestAppRetries = 3;
+
   }
 
   /**
@@ -431,6 +437,26 @@ export class Agent {
             this.messages.push({
               role: 'system',
               content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. This is your last chance — if you respond with text or call finish() again, the session will end. Use the correct JSON format for tool calls:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+            });
+            continue;
+          }
+
+          // Detect: LLM responded with text-only after npm init/install guidance
+          // (but NOT finish() interception). Some models (e.g., Qwen 3.5) sometimes
+          // stop generating after npm init -y and respond with text-only instead of
+          // calling write_file(). This is different from finish() interception —
+          // the LLM never called finish(), it just stopped generating tool calls.
+          // Re-prompt it to write the source code file.
+          const hasNpmInitGuidance = lastSystemMsg?.content?.includes('Project initialized successfully') &&
+            lastSystemMsg.content.includes('write the main application entry point');
+          const hasCreateDirGuidance = lastSystemMsg?.content?.includes('Directory created successfully') &&
+            lastSystemMsg.content.includes('write the main application source code file');
+
+          if ((hasNpmInitGuidance || hasCreateDirGuidance) && !this._hasWrittenEntryPoint) {
+            console.log('   ⚠️ Text-only response after npm init/create_directory guidance — re-prompting to use write_file()');
+            this.messages.push({
+              role: 'system',
+              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
             });
             continue;
           }
@@ -663,10 +689,36 @@ export class Agent {
 
         // Detect: LLM called test_app() twice without any code changes in between.
         // This means the LLM is retrying a failing test without fixing the code.
-        // Force-end the session — the LLM is stuck in a retry loop.
-        if (tc.tool === 'test_app' && !result.success) {
-          if (!this._hasModifiedCodeSinceLastTest) {
-            console.log('   ⚠️ LLM retried test_app() without fixing the code — ending session.');
+        // Instead of force-ending the session, inject an error message telling the
+        // LLM to read the file and make changes first. This gives the LLM a chance
+        // to recover rather than abruptly terminating.
+        if (tc.tool === 'test_app') {
+          if (!result.success && !this._hasModifiedCodeSinceLastTest) {
+            this._testAppRetryCount++;
+            console.log(`   ⚠️ LLM retried test_app() without fixing the code — re-prompting to make changes first (#${this._testAppRetryCount}/${this._maxTestAppRetries})`);
+
+            // If the LLM has been re-prompted too many times and still isn't fixing
+            // the code, force-end the session — the LLM is stuck in a retry loop.
+            if (this._testAppRetryCount >= this._maxTestAppRetries) {
+              console.log('   ⚠️ LLM repeatedly called test_app() without fixing the code — ending session.');
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: tc.tool,
+                  arguments: tc.arguments,
+                  result: 'error',
+                  output: `Error: ${result.error}`,
+                  data: result.data,
+                }),
+              });
+              this.messages.push({
+                role: 'system',
+                content: `You have called test_app() ${this._maxTestAppRetries} times without modifying any code. The session is ending because you are stuck in a retry loop. Please fix the code manually.`,
+              });
+              finished = true;
+              break;
+            }
+
             this.messages.push({
               role: 'tool',
               content: JSON.stringify({
@@ -677,11 +729,21 @@ export class Agent {
                 data: result.data,
               }),
             });
-            finished = true;
+            // Inject guidance telling the LLM to read the file and make changes first,
+            // instead of force-ending the session. The LLM gets a chance to recover.
+            this.messages.push({
+              role: 'system',
+              content: `You called test_app() but you did NOT modify any code since the last test. The app is still failing with the same error. You MUST use read_file() to examine the source code, identify the bug, and use edit_file() to fix it BEFORE calling test_app() again. Do NOT call test_app() again until you have made actual code changes.`,
+            });
+            // Do NOT set finished = true — the LLM gets a chance to fix the code
+            // Skip remaining tool calls in this iteration so the LLM sees the guidance
             break;
           }
-          // Reset the flag — the next test_app call without code changes will trigger detection
+          // Reset the flag after ANY test_app call (successful or failing with code changes).
+          // This ensures the next test_app call without code changes will trigger detection.
           this._hasModifiedCodeSinceLastTest = false;
+          // Reset the retry counter when test_app succeeds or code was modified
+          this._testAppRetryCount = 0;
         }
 
         // Define critical tools list — used both for error handling below

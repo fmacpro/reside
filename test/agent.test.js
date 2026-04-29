@@ -253,3 +253,142 @@ describe('Agent — finish() interception', () => {
     cleanup(dir);
   });
 });
+
+describe('Agent — test_app retry without code changes (Issue 3 fix)', () => {
+  it('re-prompts instead of force-ending when test_app is called without code changes', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: create dir + write a BROKEN app.js (throws at runtime)
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "throw new Error(\\"bug\\");"}}',
+      // Second LLM response: call test_app (first time, FAILS)
+      '{"tool": "test_app", "arguments": {}}',
+      // Third LLM response: call test_app AGAIN without any code changes — should re-prompt, not force-end
+      '{"tool": "test_app", "arguments": {}}',
+      // Fourth LLM response: text-only (simulating LLM acknowledging the re-prompt)
+      'I need to read the file and fix the code first.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have ended with text response (not force-ended)
+    assert.equal(result.finished, true, 'Session should end with text response');
+
+    // Verify the agent injected a re-prompt message (not a force-end)
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('did NOT modify any code since the last test')
+    );
+    assert.ok(repromptMessage, 'Should inject re-prompt message about not modifying code');
+
+    // Verify the session did NOT end with finished=true from the test_app handler
+    // (it should have ended naturally with the text-only response)
+    assert.equal(agent._hasModifiedCodeSinceLastTest, false, 'Flag should remain false since no code was modified');
+
+    cleanup(dir);
+  });
+
+  it('allows test_app to proceed when code WAS modified since last test', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: create dir + write app.js
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"v1\\");"}}',
+      // Second LLM response: call test_app (first time, succeeds)
+      '{"tool": "test_app", "arguments": {}}',
+      // Third LLM response: write_file to overwrite the file (modifies code — write_file always succeeds)
+      '{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"v2\\");"}}',
+      // Fourth LLM response: call test_app again — should be allowed (code was modified via write_file)
+      '{"tool": "test_app", "arguments": {}}',
+      // Fifth LLM response: text-only
+      'Done.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have ended with text response
+    assert.equal(result.finished, true, 'Session should end');
+
+    // Verify the agent tracked the code modification (write_file sets _hasModifiedCodeSinceLastTest = true)
+    // After test_app runs, the flag should be reset to false
+    assert.equal(agent._hasModifiedCodeSinceLastTest, false, 'Flag should be reset after test_app');
+
+    cleanup(dir);
+  });
+});
+
+describe('Agent — text-only response after npm init guidance (Issue 2 fix)', () => {
+  it('re-prompts when LLM responds with text-only after npm init guidance', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: create dir + npm init
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "execute_command", "arguments": {"command": "npm init -y", "cwd": "my-app"}}',
+      // Second LLM response: text-only (simulating Qwen 3.5 stopping after npm init)
+      'The project is initialized. I should now write the source code file.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have ended with text response
+    assert.equal(result.finished, true, 'Session should end');
+
+    // Verify the agent injected a re-prompt for text-only after npm init guidance
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('STOP responding with text') &&
+      m.content.includes('call write_file() NOW')
+    );
+    assert.ok(repromptMessage, 'Should inject re-prompt telling LLM to stop with text and call write_file()');
+
+    cleanup(dir);
+  });
+
+  it('re-prompts when LLM responds with text-only after create_directory guidance', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: create dir only (triggers create_directory guidance)
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}',
+      // Second LLM response: text-only (simulating LLM stopping after create_directory)
+      'I have created the directory. Now I need to write the source code.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have ended with text response
+    assert.equal(result.finished, true, 'Session should end');
+
+    // Verify the agent injected a re-prompt for text-only after create_directory guidance
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('STOP responding with text') &&
+      m.content.includes('call write_file() NOW')
+    );
+    assert.ok(repromptMessage, 'Should inject re-prompt telling LLM to stop with text and call write_file()');
+
+    cleanup(dir);
+  });
+});
+
+describe('Agent — system prompt modification guidance (Issue 1 fix)', () => {
+  it('includes modification guidance in the system prompt', async () => {
+    const { dir, agent } = createTestAgent([
+      '{"tool": "finish", "arguments": {"message": "Done"}}',
+    ]);
+
+    await agent.startSession();
+
+    // Find the system prompt message
+    const systemMessage = agent.messages.find(m => m.role === 'system');
+    assert.ok(systemMessage, 'System prompt should exist');
+
+    // Verify the system prompt includes guidance about reading the full file first
+    assert.ok(
+      systemMessage.content.includes('read_file() to read the FULL source code'),
+      'System prompt should include guidance about reading the full file first'
+    );
+    assert.ok(
+      systemMessage.content.includes('identify ALL the changes needed'),
+      'System prompt should include guidance about identifying all changes'
+    );
+
+    cleanup(dir);
+  });
+});

@@ -1,3 +1,4 @@
 workdir/*
 plans/
 node_modules/
+test-results/
