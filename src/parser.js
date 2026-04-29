@@ -91,15 +91,31 @@ export function parseToolCalls(content) {
     // JSON string values (e.g., JavaScript template literals in code content).
     // repairJson handles these cases without the early-return issue of
     // tryParseWithTrailingGarbage.
+    //
+    // Also handles cases where the content starts with text before the JSON
+    // (e.g., "I can see the issue...\n\n{"tool": "edit_file", ...}").
+    // In this case, we find the first '{' or '[' and try parsing from there.
     const trimmedContent = content.trim();
-    if (trimmedContent.startsWith('{') || trimmedContent.startsWith('[')) {
+    
+    // Find the start of the first JSON structure (may be after text)
+    let jsonStartIdx = -1;
+    for (let i = 0; i < trimmedContent.length; i++) {
+      const ch = trimmedContent[i];
+      if (ch === '{' || ch === '[') {
+        jsonStartIdx = i;
+        break;
+      }
+    }
+    
+    if (jsonStartIdx >= 0) {
+      const jsonContent = trimmedContent.substring(jsonStartIdx);
       // Try direct JSON.parse first
       let fullParsed = null;
       try {
-        fullParsed = JSON.parse(trimmedContent);
+        fullParsed = JSON.parse(jsonContent);
       } catch {
         // Direct parse failed — try repairing common LLM mistakes
-        const repaired = repairJson(trimmedContent);
+        const repaired = repairJson(jsonContent);
         if (repaired !== null) {
           try {
             fullParsed = JSON.parse(repaired);
@@ -113,7 +129,8 @@ export function parseToolCalls(content) {
         const calls = extractToolCalls(fullParsed);
         if (calls.length > 0) {
           result.toolCalls.push(...calls);
-          result.text = '';
+          // Any text before the JSON is the text response
+          result.text = trimmedContent.substring(0, jsonStartIdx).trim();
           return result;
         }
       }
@@ -312,10 +329,15 @@ function tryParseWithTrailingGarbage(str) {
  *    JSON string values, like:
  *      {"content": "reject(new Error(\`API failed with status \${code}\`));"}
  *    Here \` and \$ are NOT valid JSON escape sequences.
+ * 6. Unescaped control characters (literal newlines, tabs, etc.) inside
+ *    JSON string values. The LLM may output actual newline characters
+ *    inside JSON string values instead of escaping them as \n.
+ *    e.g., {"content": "line1\nline2"} instead of {"content": "line1\\nline2"}
  *
  * Strategy: extract the JSON structure, find backtick-delimited values,
  * and convert them to properly escaped JSON strings. Then fix invalid
- * escape sequences inside regular JSON strings.
+ * escape sequences inside regular JSON strings. Finally, escape any
+ * unescaped control characters inside JSON strings.
  *
  * @param {string} str
  * @returns {string|null}
@@ -509,6 +531,74 @@ function repairJson(str) {
   }
   
   result = fixedResult;
+
+  // Fix 5: Escape unescaped control characters inside JSON strings.
+  // The LLM sometimes outputs literal newlines, tabs, carriage returns, etc.
+  // inside JSON string values instead of escaping them. For example:
+  //   {"content": "line1
+  //   line2"}
+  // instead of:
+  //   {"content": "line1\nline2"}
+  //
+  // JSON does not allow literal control characters (U+0000-U+001F) inside
+  // string values. They must be escaped as \n, \t, \r, etc.
+  //
+  // Strategy: Walk through the string character by character, tracking
+  // when we're inside a JSON string (between double quotes). When we find
+  // a control character (code < 32, excluding \t which is allowed in some
+  // contexts), escape it as the appropriate JSON escape sequence.
+  {
+    let escapedResult = '';
+    let inStr = false;
+    let esc = false;
+    
+    for (let i = 0; i < result.length; i++) {
+      const ch = result[i];
+      
+      if (esc) {
+        esc = false;
+        escapedResult += ch;
+        continue;
+      }
+      
+      if (ch === '\\' && inStr) {
+        esc = true;
+        escapedResult += ch;
+        continue;
+      }
+      
+      if (ch === '"') {
+        inStr = !inStr;
+        escapedResult += ch;
+        continue;
+      }
+      
+      if (inStr) {
+        const code = ch.charCodeAt(0);
+        if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+          // Other control characters — escape as \uXXXX
+          escapedResult += '\\u' + code.toString(16).padStart(4, '0');
+          continue;
+        } else if (code === 10) {
+          // Newline — escape as \n
+          escapedResult += '\\n';
+          continue;
+        } else if (code === 13) {
+          // Carriage return — escape as \r
+          escapedResult += '\\r';
+          continue;
+        } else if (code === 9) {
+          // Tab — escape as \t
+          escapedResult += '\\t';
+          continue;
+        }
+      }
+      
+      escapedResult += ch;
+    }
+    
+    result = escapedResult;
+  }
 
   return result;
 }
