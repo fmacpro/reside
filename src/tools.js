@@ -164,6 +164,34 @@ export class ToolEngine {
     const currentLines = currentContent.split('\n');
     const newLines = newCode.split('\n');
 
+    // Special case: single-line files (or files with very few lines).
+    // When the entire file content is being replaced (e.g., changing
+    // "version 1" to "version 2"), the anchor line won't match because
+    // the old and new content are different. In this case, check if
+    // there's any overlap between the old and new content. If there is
+    // (e.g., the new_string contains part of the old content), replace
+    // the entire file. If the content is completely different, return
+    // null so the caller can report a helpful error.
+    if (currentLines.length <= 3 && newLines.length <= 3) {
+      // Check if there's any overlap between current and new content.
+      // If the new content is completely different (no shared lines),
+      // return null to indicate no match found.
+      const hasOverlap = newLines.some(nl => {
+        const trimmed = nl.trim();
+        return trimmed && currentLines.some(cl => cl.trim() === trimmed);
+      });
+      if (hasOverlap) {
+        return {
+          startChar: 0,
+          endChar: currentContent.length,
+          startLine: 0,
+          endLine: currentLines.length,
+          score: 0,
+        };
+      }
+      // No overlap — fall through to normal matching (which will also fail)
+    }
+
     // Find the first significant line in newCode — this is our anchor.
     // Skip comment lines, blank lines, and import/require statements.
     let anchorLine = '';
@@ -1564,10 +1592,29 @@ export class ToolEngine {
       },
 
       test_app: async ({ args }) => {
-        // Find the entry point file in the current app directory
-        const appDir = this._currentApp;
+        // Find the entry point file in the current app directory.
+        // If _currentApp is not set (e.g., across sessions), scan the workdir
+        // for app directories. If exactly one is found, use it automatically.
+        // If multiple are found, return an error listing the available apps
+        // so the LLM can specify which one to test.
+        let appDir = this._currentApp;
         if (!appDir) {
-          return { success: false, error: 'No app directory found. Create an app first with create_directory() and write source files with write_file().' };
+          const apps = readdirSync(this.workspaceDir, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('node_modules'));
+          if (apps.length === 0) {
+            return { success: false, error: 'No app directory found. Create an app first with create_directory() and write source files with write_file().' };
+          }
+          if (apps.length === 1) {
+            appDir = apps[0].name;
+            // Set _currentApp so subsequent calls don't need to scan again
+            this._currentApp = appDir;
+          } else {
+            const appNames = apps.map(a => `"${a.name}"`).join(', ');
+            return {
+              success: false,
+              error: `Multiple app directories found: ${appNames}. Please specify which app to test by calling execute_command() with cwd="<app-name>" and running the app manually, e.g.: execute_command({"command":"node app.js","cwd":"<app-name>"})`,
+            };
+          }
         }
 
         const appPath = join(this.workspaceDir, appDir);

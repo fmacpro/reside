@@ -842,4 +842,87 @@ describe('ToolEngine', () => {
       assert.match(desc, /create_directory/);
     });
   });
+
+  describe('test_app', () => {
+    it('fails when no app directory exists', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /No app directory found/);
+      cleanup(dir);
+    });
+
+    it('finds the single app directory when _currentApp is null (cross-session, Issue 6 fix)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      // Create an app directory with an entry point (simulating a previous session)
+      mkdirSync(join(dir, 'my-app'));
+      writeFileSync(join(dir, 'my-app', 'app.js'), 'console.log("Hello from cross-session");', 'utf-8');
+
+      // _currentApp should be null (simulating a new session)
+      assert.equal(engine._currentApp, null, '_currentApp should be null initially');
+
+      // test_app should find the single app directory automatically
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, true, 'test_app should succeed by finding the single app directory');
+      assert.match(result.output, /Hello from cross-session/);
+
+      // _currentApp should now be set to the found app
+      assert.equal(engine._currentApp, 'my-app', '_currentApp should be set to the found app');
+
+      cleanup(dir);
+    });
+
+    it('returns error listing apps when multiple app directories exist', async () => {
+      const { dir, engine } = createTestWorkspace();
+      // Create two app directories with entry points
+      mkdirSync(join(dir, 'app-one'));
+      writeFileSync(join(dir, 'app-one', 'app.js'), 'console.log("App One");', 'utf-8');
+      mkdirSync(join(dir, 'app-two'));
+      writeFileSync(join(dir, 'app-two', 'app.js'), 'console.log("App Two");', 'utf-8');
+
+      // _currentApp should be null (simulating a new session)
+      assert.equal(engine._currentApp, null, '_currentApp should be null initially');
+
+      // test_app should return an error listing the available apps
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, false, 'test_app should fail when multiple apps exist');
+      assert.match(result.error, /Multiple app directories found/);
+      assert.match(result.error, /"app-one"/);
+      assert.match(result.error, /"app-two"/);
+
+      cleanup(dir);
+    });
+
+    it('uses _currentApp when set (same-session behavior preserved)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      // Create two app directories
+      mkdirSync(join(dir, 'app-one'));
+      writeFileSync(join(dir, 'app-one', 'app.js'), 'console.log("App One");', 'utf-8');
+      mkdirSync(join(dir, 'app-two'));
+      writeFileSync(join(dir, 'app-two', 'app.js'), 'console.log("App Two");', 'utf-8');
+
+      // Set _currentApp to app-one (simulating same-session behavior)
+      engine._currentApp = 'app-one';
+
+      // test_app should use _currentApp and not scan the workdir
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, true, 'test_app should use _currentApp');
+      assert.match(result.output, /App One/);
+
+      cleanup(dir);
+    });
+
+    it('fails when no entry point file exists in the app directory', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app'));
+      // No entry point file — just an empty directory
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /No entry point file found/);
+
+      cleanup(dir);
+    });
+  });
 });

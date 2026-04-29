@@ -363,6 +363,113 @@ describe('Agent — text-only response after npm init guidance (Issue 2 fix)', (
     );
     assert.ok(repromptMessage, 'Should inject re-prompt telling LLM to stop with text and call write_file()');
 
+  });
+});
+
+describe('Agent — single tool call without test/finish (Issue 5 fix)', () => {
+  it('re-prompts when LLM writes code but does not test or finish', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: write a file but NO test_app or finish
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}',
+      // Second LLM response: text-only (simulating LLM acknowledging the re-prompt)
+      'I need to test the app now.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create a simple app');
+
+    // Should have ended with text response (not force-ended)
+    assert.equal(result.finished, true, 'Session should end with text response');
+
+    // Verify the agent injected a re-prompt message about testing/finishing
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('did NOT test the app or call finish()')
+    );
+    assert.ok(repromptMessage, 'Should inject re-prompt message about testing/finishing');
+
+    // Verify the tracking state was set
+    assert.equal(agent._hadWriteInCurrentIteration, true, 'Should have tracked write in current iteration');
+    assert.equal(agent._hadTestOrFinishInCurrentIteration, false, 'Should NOT have tracked test/finish');
+    assert.equal(agent._singleToolCallRepromptCount, 1, 'Should have incremented reprompt count');
+
+    cleanup(dir);
+  });
+
+  it('force-ends session after repeated single-tool-call without test/finish', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: write a file but NO test_app or finish
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}',
+      // Second LLM response: write another file but still NO test_app or finish
+      '{"tool": "write_file", "arguments": {"path": "my-app/utils.js", "content": "export const add = (a, b) => a + b;"}}',
+      // Third LLM response: write another file but still NO test_app or finish
+      '{"tool": "write_file", "arguments": {"path": "my-app/helper.js", "content": "export const greet = (name) => \\`Hello \\${name}\\`;"}}',
+      // Fourth LLM response: write another file — should force-end after 3 re-prompts
+      '{"tool": "write_file", "arguments": {"path": "my-app/extra.js", "content": "// extra"}}',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have finished (force-ended after 3 re-prompts)
+    assert.equal(result.finished, true, 'Session should end after repeated single-tool-call');
+
+    // Verify the agent tracked the reprompt count
+    assert.equal(agent._singleToolCallRepromptCount, 3, 'Should have reprompted 3 times');
+
+    // Verify the force-end system message was injected
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const forceEndMessage = systemMessages.find(m =>
+      m.content.includes('written code multiple times without testing')
+    );
+    assert.ok(forceEndMessage, 'Should inject force-end message after 3 re-prompts');
+
+    cleanup(dir);
+  });
+
+  it('does NOT re-prompt when test_app is called after write_file', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: write a file AND call test_app
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}\n{"tool": "test_app", "arguments": {}}',
+      // Second LLM response: text-only
+      'Done.',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have ended with text response
+    assert.equal(result.finished, true, 'Session should end');
+
+    // Verify NO re-prompt was injected (test_app was called)
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('did NOT test the app or call finish()')
+    );
+    assert.equal(repromptMessage, undefined, 'Should NOT inject re-prompt when test_app was called');
+
+    cleanup(dir);
+  });
+
+  it('does NOT re-prompt when finish is called after write_file', async () => {
+    const { dir, agent } = createTestAgent([
+      // First LLM response: write a file AND call finish
+      '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}\n{"tool": "finish", "arguments": {"message": "Done"}}',
+    ]);
+
+    await agent.startSession();
+    const result = await agent.processUserMessage('Create an app');
+
+    // Should have finished (entry point was written)
+    assert.equal(result.finished, true, 'Session should finish');
+
+    // Verify NO re-prompt was injected (finish was called)
+    const systemMessages = agent.messages.filter(m => m.role === 'system');
+    const repromptMessage = systemMessages.find(m =>
+      m.content.includes('did NOT test the app or call finish()')
+    );
+    assert.equal(repromptMessage, undefined, 'Should NOT inject re-prompt when finish was called');
+
     cleanup(dir);
   });
 });

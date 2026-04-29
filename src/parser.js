@@ -333,11 +333,19 @@ function tryParseWithTrailingGarbage(str) {
  *    JSON string values. The LLM may output actual newline characters
  *    inside JSON string values instead of escaping them as \n.
  *    e.g., {"content": "line1\nline2"} instead of {"content": "line1\\nline2"}
+ * 7. Unescaped double quotes inside JSON string values. The LLM sometimes
+ *    outputs code content with unescaped double quotes, like:
+ *      {"content": "console.log("Hello");"}
+ *    instead of:
+ *      {"content": "console.log(\"Hello\");"}
+ *    This happens when the LLM generates JSON with JavaScript/HTML code
+ *    that contains double quotes, but forgets to escape them.
  *
  * Strategy: extract the JSON structure, find backtick-delimited values,
  * and convert them to properly escaped JSON strings. Then fix invalid
- * escape sequences inside regular JSON strings. Finally, escape any
- * unescaped control characters inside JSON strings.
+ * escape sequences inside regular JSON strings. Then escape any
+ * unescaped control characters inside JSON strings. Finally, detect and
+ * escape unescaped double quotes inside JSON string values.
  *
  * @param {string} str
  * @returns {string|null}
@@ -598,6 +606,78 @@ function repairJson(str) {
     }
     
     result = escapedResult;
+  }
+
+  // Fix 6: Escape unescaped double quotes inside JSON string values.
+  // The LLM sometimes outputs code content with unescaped double quotes,
+  // like:
+  //   {"content": "console.log("Hello");"}
+  // instead of:
+  //   {"content": "console.log(\"Hello\");"}
+  //
+  // Strategy: Walk through the string tracking whether we're inside a
+  // JSON string. When we encounter a '"' that would close a string, check
+  // if the next non-whitespace character suggests this is actually content
+  // (e.g., followed by a letter/digit and then another '"'). If so, escape
+  // the '"' as '\"' instead of treating it as a string delimiter.
+  //
+  // In valid JSON, after a '"' that closes a string value, the next
+  // meaningful character should be one of: , } ] : or whitespace.
+  // If it's a letter, digit, or other content character, the '"' is
+  // likely part of the content and should be escaped.
+  {
+    let fixedResult = '';
+    let inStr = false;
+    let esc = false;
+    
+    for (let i = 0; i < result.length; i++) {
+      const ch = result[i];
+      
+      if (esc) {
+        esc = false;
+        fixedResult += ch;
+        continue;
+      }
+      
+      if (ch === '\\' && inStr) {
+        esc = true;
+        fixedResult += ch;
+        continue;
+      }
+      
+      if (ch === '"') {
+        if (inStr) {
+          // We're inside a string and found a '"' that would close it.
+          // Look ahead to see if this is actually content.
+          // Find the next non-whitespace character.
+          let nextNonWs = '';
+          for (let j = i + 1; j < result.length; j++) {
+            const nc = result[j];
+            if (!/\s/.test(nc)) {
+              nextNonWs = nc;
+              break;
+            }
+          }
+          
+          // If the next non-whitespace char is a letter, digit, or other
+          // content character (not a valid JSON structural character),
+          // this '"' is likely unescaped content — escape it.
+          // Valid JSON structural chars after a string value: , } ] :
+          if (nextNonWs && !',}]::'.includes(nextNonWs) && nextNonWs !== '') {
+            // This '"' is likely unescaped content — escape it
+            fixedResult += '\\"';
+            continue;
+          }
+        }
+        inStr = !inStr;
+        fixedResult += ch;
+        continue;
+      }
+      
+      fixedResult += ch;
+    }
+    
+    result = fixedResult;
   }
 
   return result;

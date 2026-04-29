@@ -250,6 +250,26 @@ export class Agent {
     this._testAppRetryCount = 0;
     this._maxTestAppRetries = 3;
 
+    // Track whether the current iteration had a write_file/edit_file call
+    // but no test_app or finish call. Some models (e.g., Qwen 3.5) generate
+    // only a single tool call (write_file) and then stop, without testing
+    // the app or calling finish. We detect this when the LLM's next response
+    // is text-only (no tool calls) and inject guidance to continue.
+    this._hadWriteInCurrentIteration = false;
+    this._hadTestOrFinishInCurrentIteration = false;
+
+    // Track whether the PREVIOUS iteration had a write without test/finish.
+    // This flag persists across iterations and is checked when the LLM
+    // responds with text-only (no tool calls) — indicating it stopped
+    // generating after writing code without testing or finishing.
+    this._hadWriteWithoutTestOrFinish = false;
+
+    // Track how many times the LLM has been re-prompted to continue after
+    // a single tool call. After 3 re-prompts, force-end the session — the
+    // LLM is stuck generating single tool calls without completing the task.
+    this._singleToolCallRepromptCount = 0;
+    this._maxSingleToolCallReprompts = 3;
+
   }
 
   /**
@@ -512,9 +532,42 @@ export class Agent {
 
           console.log(`\n🤖 ${renderText(lastText)}`);
         }
+
+        // Detect: LLM wrote code in the previous iteration but did NOT test or
+        // finish, and now responds with text-only (no tool calls). This means
+        // the LLM stopped generating after writing code without testing or
+        // finishing. Some models (e.g., Qwen 3.5) generate only a single tool
+        // call (write_file) and then stop. Inject guidance to continue.
+        if (this._hadWriteWithoutTestOrFinish) {
+          this._singleToolCallRepromptCount++;
+          console.log(`   ⚠️ LLM wrote code but did not test or finish — re-prompting to continue (#${this._singleToolCallRepromptCount}/${this._maxSingleToolCallReprompts})`);
+
+          if (this._singleToolCallRepromptCount >= this._maxSingleToolCallReprompts) {
+            console.log('   ⚠️ LLM repeatedly wrote code without testing or finishing — ending session.');
+            this.messages.push({
+              role: 'system',
+              content: 'You have written code multiple times without testing the app or calling finish(). The session is ending. Please test the app manually.',
+            });
+            finished = true;
+            break;
+          }
+
+          this.messages.push({
+            role: 'system',
+            content: 'You wrote the source code file but did NOT test the app or call finish(). You MUST call test_app() to verify the app works, then call finish() when it runs successfully. Do NOT write more code — test what you have first.',
+          });
+          // Reset the flag so we don't re-prompt again on the next text-only response
+          this._hadWriteWithoutTestOrFinish = false;
+          continue;
+        }
+
         finished = true;
         break;
       }
+
+      // Reset per-iteration tracking flags
+      this._hadWriteInCurrentIteration = false;
+      this._hadTestOrFinishInCurrentIteration = false;
 
       // Execute each tool call
       for (const tc of toolCalls) {
@@ -687,6 +740,12 @@ export class Agent {
           }
         }
 
+        // Track that test_app or finish was called in this iteration.
+        // Used to detect when the LLM writes code but doesn't test or finish.
+        if (tc.tool === 'test_app' || tc.tool === 'finish') {
+          this._hadTestOrFinishInCurrentIteration = true;
+        }
+
         // Detect: LLM called test_app() twice without any code changes in between.
         // This means the LLM is retrying a failing test without fixing the code.
         // Instead of force-ending the session, inject an error message telling the
@@ -813,6 +872,9 @@ export class Agent {
             // fixing the code — if test_app is called twice without any code
             // changes in between, it's a retry loop.
             this._hasModifiedCodeSinceLastTest = true;
+            // Track that a write/edit occurred in this iteration.
+            // Used to detect when the LLM writes code but doesn't test or finish.
+            this._hadWriteInCurrentIteration = true;
             // Track whether a CODE file (not just data like .json) was written.
             // The LLM sometimes writes recipes.json but still hasn't written app.js.
             const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
@@ -1265,18 +1327,28 @@ Common issues:
             break;
           }
         }
-      }
-
-      // Auto-commit in each dirty app directory
-      if (this.config.autoCommit) {
-        const dirtyApps = this.workspaceManager.findDirtyApps();
-        for (const appPath of dirtyApps) {
-          this.workspaceManager.autoCommit(
-            appPath,
-            `Iteration ${this.iteration}: ${toolCalls.map(t => t.tool).join(', ')}`
-          );
+        // Auto-commit in each dirty app directory
+        if (this.config.autoCommit) {
+          const dirtyApps = this.workspaceManager.findDirtyApps();
+          for (const appPath of dirtyApps) {
+            this.workspaceManager.autoCommit(
+              appPath,
+              `Iteration ${this.iteration}: ${toolCalls.map(t => t.tool).join(', ')}`
+            );
+          }
         }
       }
+
+    // Track whether the LLM wrote code but didn't test or finish in this iteration.
+    // This flag persists across iterations and is checked when the LLM's next
+    // response is text-only (no tool calls) — indicating it stopped generating
+    // after writing code without testing or finishing.
+    // Some models (e.g., Qwen 3.5) generate only a single tool call (write_file)
+    // and then stop, without testing the app or calling finish().
+    if (this._hadWriteInCurrentIteration && !this._hadTestOrFinishInCurrentIteration && !finished) {
+      this._hadWriteWithoutTestOrFinish = true;
+    } else {
+      this._hadWriteWithoutTestOrFinish = false;
     }
 
     return {
@@ -1285,6 +1357,7 @@ Common issues:
       toolCalls: this.messages.filter(m => m.role === 'tool').length,
     };
   }
+}
 
   /**
    * End the session and print summary.
