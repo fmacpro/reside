@@ -434,7 +434,7 @@ export class Agent {
 
           this.messages.push({
             role: 'system',
-            content: `You just read "${this._lastReadFilePath}" but did NOT make any changes. You MUST use edit_file() to apply the fix. Do NOT just explain what to do — call edit_file() with the exact changes needed. Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "new_string": "the replacement text (include enough surrounding context like the function signature so the tool can locate the right section)"}}\n\nDo NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
+            content: `You just read "${this._lastReadFilePath}" but did NOT make any changes. You MUST use edit_file() to apply the fix. Do NOT just explain what to do — call edit_file() with the exact changes needed. Pass the file path and the new code (with enough surrounding context for the tool to locate the right section). Do NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
           });
           // Reset the flag so we don't re-prompt again on the next text-only response
           this._lastToolWasReadFile = false;
@@ -469,7 +469,7 @@ export class Agent {
           console.log('   ⚠️ Empty/whitespace-only response after create_directory/npm init guidance — re-prompting to use write_file()');
           this.messages.push({
             role: 'system',
-            content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+            content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Pass the file path (e.g., "app-name/app.js") and the complete source code as the content. Do NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
           });
           continue;
         }
@@ -527,7 +527,7 @@ export class Agent {
             console.log('   ⚠️ Text-only response after finish() interception — re-prompting to use write_file()');
             this.messages.push({
               role: 'system',
-              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. This is your last chance — if you respond with text or call finish() again, the session will end. Use the correct JSON format for tool calls:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. This is your last chance — if you respond with text or call finish() again, the session will end. Pass the file path (e.g., "app-name/app.js") and the complete source code as the content. Do NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
             });
             continue;
           }
@@ -546,7 +546,7 @@ export class Agent {
             console.log('   ⚠️ Text-only response after npm init/create_directory guidance — re-prompting to use write_file()');
             this.messages.push({
               role: 'system',
-              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+              content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Pass the file path (e.g., "app-name/app.js") and the complete source code as the content. Do NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
             });
             continue;
           }
@@ -980,7 +980,7 @@ export class Agent {
           });
           this.messages.push({
             role: 'system',
-            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Use the correct JSON format:\n\n{"tool": "edit_file", "arguments": {"file_path": "${this._lastReadFilePath}", "new_string": "the replacement text (include enough surrounding context like the function signature so the tool can locate the right section)"}}\n\nDo NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
+            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Pass the file path and the new code (with enough surrounding context for the tool to locate the right section). Do NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
           });
           // Skip remaining tool calls in this iteration so the LLM sees the guidance
           break;
@@ -1331,7 +1331,7 @@ export class Agent {
                 console.log('   ⚠️ finish() called in same batch as npm init/install without writing any code — skipping finish() and re-prompting');
                 this.messages.push({
                   role: 'system',
-                  content: 'You called finish() in the same response as npm init/install, but you did NOT write any source code. You MUST call write_file() NOW to create the application source code file. Do NOT call finish() again — write the code file first. Use the correct JSON format:\n\n{"tool": "write_file", "arguments": {"path": "app-name/app.js", "content": "your complete source code here"}}\n\nDo NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
+                  content: 'You called finish() in the same response as npm init/install, but you did NOT write any source code. You MUST call write_file() NOW to create the application source code file. Do NOT call finish() again — write the code file first. Pass the file path (e.g., "app-name/app.js") and the complete source code as the content. Do NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
                 });
                 // Skip this finish() call — don't inject a tool result, don't set finished
                 continue;
