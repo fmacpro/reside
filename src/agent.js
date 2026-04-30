@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { OllamaClient } from './ollama.js';
 import { ToolEngine } from './tools.js';
 import { WorkspaceManager } from './workspace.js';
@@ -1178,7 +1179,7 @@ export class Agent {
               },
               {
                 pattern: /MODULE_NOT_FOUND/i,
-                guidance: 'The source file does not exist. You forgot to write it! You MUST use write_file() to create the source file BEFORE running it. Do NOT retry the run command — write the source file first.',
+                guidance: 'The source file does not exist. You forgot to write it! You MUST call write_file() NOW to create the source file BEFORE running it. Do NOT retry the run command — write the source file first using write_file(). Pass the file path (e.g., "app-name/app.js") and the complete source code as the content parameter.',
               },
               {
                 pattern: /require is not defined in ES module scope/i,
@@ -1233,6 +1234,48 @@ export class Agent {
               } else {
                 this._runtimeErrorCount = 1;
                 this._lastRunCommand = cmd;
+              }
+
+              // Special handling for MODULE_NOT_FOUND: extract the referenced file path
+              // from the error and check if it actually exists. If it doesn't exist,
+              // the LLM forgot to write the source file — inject guidance with the
+              // exact file path and set runtimeErrorCount to 1 so one more retry ends
+              // the session. This prevents the LLM from retrying the same command
+              // instead of writing the file.
+              if (matchedError.pattern === /MODULE_NOT_FOUND/i) {
+                // Extract the file path from the error message
+                // Error format: "Cannot find module '/path/to/app.js'"
+                const filePathMatch = errMsg.match(/Cannot find module\s+'([^']+)'/i);
+                if (filePathMatch) {
+                  const missingFilePath = filePathMatch[1];
+                  // Check if the file exists on disk
+                  if (!existsSync(missingFilePath)) {
+                    // The file doesn't exist — the LLM forgot to write it.
+                    // Set runtimeErrorCount to 1 so the next retry ends the session.
+                    this._runtimeErrorCount = 1;
+                    this._lastRunCommand = cmd;
+                    
+                    // Extract just the filename from the path for the guidance message
+                    const fileName = missingFilePath.split('/').pop();
+                    const appDir = missingFilePath.split('/').slice(-2, -1)[0] || 'app-name';
+                    
+                    this.messages.push({
+                      role: 'tool',
+                      content: JSON.stringify({
+                        tool: tc.tool,
+                        arguments: tc.arguments,
+                        result: 'error',
+                        output: `Error: ${result.error}`,
+                      }),
+                    });
+                    this.messages.push({
+                      role: 'system',
+                      content: `The file "${missingFilePath}" does not exist — you forgot to write it! You MUST call write_file() NOW to create this file BEFORE running it. Use: write_file({"path":"${appDir}/${fileName}","content":"..."}) with the complete source code. Do NOT retry the run command — write the source file first using write_file().`,
+                    });
+                    // Break out of the tool loop so the LLM writes the file
+                    break;
+                  }
+                }
               }
 
               // If the LLM has already been told to fix the code and is retrying

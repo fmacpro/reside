@@ -1028,6 +1028,35 @@ Do NOT write everything into a single file. Split the functionality into separat
             };
           }
 
+          // Detect built-in Node.js modules being installed via npm.
+          // The LLM sometimes tries to install built-in modules like "child_process",
+          // "fs", "path", etc. which are already part of Node.js and don't need
+          // to be installed. Installing them will either fail (package not found)
+          // or install a third-party package with the same name (which is wrong).
+          const builtInModules = new Set([
+            'child_process', 'fs', 'path', 'os', 'http', 'https', 'url', 'util',
+            'events', 'stream', 'buffer', 'crypto', 'assert', 'net', 'dns',
+            'dgram', 'readline', 'tls', 'zlib', 'querystring', 'string_decoder',
+            'timers', 'tty', 'punycode', 'process', 'console', 'module',
+            'cluster', 'domain', 'vm', 'worker_threads', 'perf_hooks',
+            'async_hooks', 'diagnostics_channel', 'trace_events',
+            'inspector', 'wasi', 'test', 'node:test',
+          ]);
+          const builtInPackages = packages.filter(p => builtInModules.has(p));
+          if (builtInPackages.length > 0) {
+            const builtInPkgList = builtInPackages.map(p => `"${p}"`).join(', ');
+            return {
+              success: false,
+              error: `You are trying to install built-in Node.js modules (${builtInPkgList}) via npm. These modules are already part of Node.js and do NOT need to be installed. Simply use \`import\` or \`require()\` to use them in your code:\n\n` +
+                `• \`import { execSync } from "node:child_process";\` — no npm install needed\n` +
+                `• \`import { readFileSync, writeFileSync } from "node:fs";\` — no npm install needed\n` +
+                `• \`import { join, resolve } from "node:path";\` — no npm install needed\n` +
+                `• \`import os from "node:os";\` — no npm install needed\n\n` +
+                `Remove these packages from the install command. They are available natively in Node.js without any installation.`,
+              data: { exitCode: null, stdout: '', stderr: '' },
+            };
+          }
+
           // Track valid and invalid packages for multi-package installs
           const validPackages = [];
           const invalidPackages = [];
