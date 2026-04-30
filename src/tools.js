@@ -94,7 +94,31 @@ export class ToolEngine {
    * @returns {Promise<ToolResult>}
    */
   async execute(tool, args) {
-    const handler = this._getHandler(tool);
+    // Resolve tool aliases first (e.g., "rename_file" -> "edit_file")
+    const toolAliases = {
+      'rename_file': 'edit_file',
+      'rename': 'edit_file',
+      'move_file': 'edit_file',
+      'copy_file': 'write_file',
+      'delete': 'delete_file',
+      'remove': 'delete_file',
+      'mkdir': 'create_directory',
+      'create_dir': 'create_directory',
+      'ls': 'list_files',
+      'dir': 'list_files',
+      'cat': 'read_file',
+      'type': 'read_file',
+      'grep': 'search_files',
+      'find': 'search_files',
+      'exec': 'execute_command',
+      'run': 'execute_command',
+      'shell': 'execute_command',
+      'npm': 'execute_command',
+      'node': 'execute_command',
+    };
+    const resolvedTool = toolAliases[tool] || tool;
+
+    const handler = this._getHandler(resolvedTool);
     if (!handler) {
       return {
         success: false,
@@ -108,7 +132,7 @@ export class ToolEngine {
       // like "createRequire" to write_file, and also prevents those extra
       // params from being echoed back in tool results (which would reinforce
       // the hallucination).
-      const cleanArgs = this.stripUnknownArgs(tool, args);
+      const cleanArgs = this.stripUnknownArgs(resolvedTool, args);
       return await handler(cleanArgs);
     } catch (err) {
       return { success: false, error: `Error executing "${tool}": ${err.message}` };

@@ -1185,8 +1185,16 @@ export class Agent {
                 guidance: 'The project uses ES modules ("type": "module" in package.json), which do NOT support require(). You MUST use import/export syntax instead. To fix this: (1) Replace require() calls with import statements, e.g., import axios from "axios"; instead of const axios = require("axios"); (2) If you need require() for some packages, use createRequire: import { createRequire } from "node:module"; const require = createRequire(import.meta.url); (3) For JSON file imports, use: import data from "./file.json" with { type: "json" }; Do NOT edit package.json to remove "type": "module" — that is the wrong fix. Adapt the code to use ESM syntax instead.',
               },
               {
+                pattern: /__dirname is not defined in ES module scope/i,
+                guidance: 'The project uses ES modules ("type": "module" in package.json), which do NOT support __dirname. To fix this, use import.meta.url with fileURLToPath: import { fileURLToPath } from "node:url"; import { dirname } from "node:path"; const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename); Or better, use path.resolve(fileURLToPath(import.meta.url), "../data/todos.json") for file paths. Do NOT edit package.json to remove "type": "module" — that is the wrong fix.',
+              },
+              {
                 pattern: /ERR_IMPORT_ATTRIBUTE_MISSING/i,
                 guidance: 'Node.js v24 requires the "with { type: \'json\' }" assertion when importing JSON files in ES modules. To fix this, add the assertion to your import statement: import data from "./file.json" with { type: "json" }; Do NOT remove "type": "module" from package.json — that is the wrong fix. Just add the assertion to the import statement.',
+              },
+              {
+                pattern: /does not provide an export named/i,
+                guidance: 'The import statement uses a named export that does not exist in the package. This usually means you are importing the wrong name. For example, node-fetch v3+ exports fetch as the DEFAULT export, not a named export. To fix this, use: import fetch from "node-fetch"; (not import { fetch } from "node-fetch" or import { fetch_url } from "node-fetch"). For other packages, check the package documentation to find the correct export name. Use read_file() to examine the source code and fix the import statement with edit_file().',
               },
               {
                 pattern: /^(TypeError|ReferenceError|SyntaxError|RangeError|URIError):/m,
