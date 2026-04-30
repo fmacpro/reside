@@ -882,6 +882,47 @@ export class Agent {
           this._testAppRetryCount = 0;
         }
 
+        // Detect: test_app failed with a runtime error (SyntaxError, TypeError, etc.)
+        // even though the LLM modified code since the last test. The LLM fixed one bug
+        // but introduced another (or the fix was incomplete). Inject guidance telling
+        // the LLM to use read_file() and edit_file() to fix the remaining error.
+        //
+        // This is separate from the retry detection above (which catches test_app called
+        // twice without any code changes). Here, the LLM DID make changes but the app
+        // still has errors — we need to guide the LLM to fix the new error.
+        //
+        // We check for common runtime error patterns in the test_app output/error:
+        // SyntaxError, TypeError, ReferenceError, RangeError, etc.
+        if (tc.tool === 'test_app' && !result.success) {
+          const errorMsg = result.error || result.output || '';
+          const hasRuntimeError = /^(SyntaxError|TypeError|ReferenceError|RangeError|URIError):/m.test(errorMsg);
+          
+          if (hasRuntimeError) {
+            console.log('   ⚠️ test_app found a runtime error — injecting guidance to fix the code');
+            
+            // Inject the test_app result as a tool result
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: errorMsg,
+                data: result.data,
+              }),
+            });
+            
+            // Inject guidance telling the LLM to read the file and fix the error
+            this.messages.push({
+              role: 'system',
+              content: `The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.\n\nError:\n${errorMsg}`,
+            });
+            
+            // Skip remaining tool calls in this iteration so the LLM sees the guidance
+            break;
+          }
+        }
+
         // Define critical tools list — used both for error handling below
         // and for deciding whether to inject tool results.
         const criticalTools = ['write_file', 'create_directory', 'edit_file'];
