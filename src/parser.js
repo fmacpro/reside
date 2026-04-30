@@ -133,6 +133,12 @@ export function parseToolCalls(content) {
           result.text = trimmedContent.substring(0, jsonStartIdx).trim();
           return result;
         }
+        
+        // If the full content parsed as valid JSON but extractToolCalls returned
+        // no results (e.g., the JSON is an array of objects without "tool" property,
+        // or a single object without valid tool structure), don't return early.
+        // Fall through to the regex fallback below which may find tool calls
+        // embedded in text content.
       }
     }
 

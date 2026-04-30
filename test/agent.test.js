@@ -391,25 +391,30 @@ describe('Agent — single tool call without test/finish (Issue 5 fix)', () => {
     // Verify the tracking state was set
     assert.equal(agent._hadWriteInCurrentIteration, true, 'Should have tracked write in current iteration');
     assert.equal(agent._hadTestOrFinishInCurrentIteration, false, 'Should NOT have tracked test/finish');
-    assert.equal(agent._singleToolCallRepromptCount, 1, 'Should have incremented reprompt count');
+    // Counter stays at 0 because app.js is a new file — progress is detected, counter is reset
+    assert.equal(agent._singleToolCallRepromptCount, 0, 'Should reset counter when new file is written (progress detected)');
 
     cleanup(dir);
   });
 
-  it('force-ends session after repeated single-tool-call without test/finish', async () => {
+  it('force-ends session after repeated single-tool-call without test/finish (same file, no progress)', async () => {
     const { dir, agent } = createTestAgent([
       // First LLM response: write a file but NO test_app or finish
       '{"tool": "create_directory", "arguments": {"path": "my-app"}}\n{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}',
-      // Second LLM response: text-only (triggers re-prompt #1 — "you wrote code but did not test or finish")
+      // Second LLM response: text-only (first write is a NEW file — counter resets to 0)
       'I wrote the app.js file. Let me continue.',
-      // Third LLM response: write another file but still NO test_app or finish
-      '{"tool": "write_file", "arguments": {"path": "my-app/utils.js", "content": "export const add = (a, b) => a + b;"}}',
-      // Fourth LLM response: text-only (triggers re-prompt #2)
-      'I added the utils module.',
-      // Fifth LLM response: write another file but still NO test_app or finish
-      '{"tool": "write_file", "arguments": {"path": "my-app/helper.js", "content": "export const greet = (name) => \\`Hello \\${name}\\`;"}}',
-      // Sixth LLM response: text-only (triggers re-prompt #3 — force-end)
-      'I added the helper module.',
+      // Third LLM response: write the SAME file again (no progress — same path, counter = 1)
+      '{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello\\");"}}',
+      // Fourth LLM response: text-only (triggers re-prompt #1)
+      'I updated the app.js file.',
+      // Fifth LLM response: write the SAME file again (no progress — same path, counter = 2)
+      '{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello World\\");"}}',
+      // Sixth LLM response: text-only (triggers re-prompt #2)
+      'I updated the app.js file again.',
+      // Seventh LLM response: write the SAME file again (no progress — same path, counter = 3 — force-end)
+      '{"tool": "write_file", "arguments": {"path": "my-app/app.js", "content": "console.log(\\"Hello World Again\\");"}}',
+      // Eighth LLM response: text-only (triggers re-prompt #3 — force-end)
+      'I updated the app.js file once more.',
     ]);
 
     await agent.startSession();
@@ -419,6 +424,7 @@ describe('Agent — single tool call without test/finish (Issue 5 fix)', () => {
     assert.equal(result.finished, true, 'Session should end after repeated single-tool-call');
 
     // Verify the agent tracked the reprompt count
+    // First write is a new file (counter reset to 0), then 3 writes of the same file (counter = 3)
     assert.equal(agent._singleToolCallRepromptCount, 3, 'Should have reprompted 3 times');
 
     // Verify the force-end system message was injected

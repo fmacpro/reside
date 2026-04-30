@@ -268,8 +268,28 @@ export class Agent {
     // Track how many times the LLM has been re-prompted to continue after
     // a single tool call. After 3 re-prompts, force-end the session — the
     // LLM is stuck generating single tool calls without completing the task.
+    // However, if the LLM is making progress (writing new files), the counter
+    // is reset so the session continues. This handles models like Qwen 3.5
+    // that write one file per iteration without testing or finishing.
     this._singleToolCallRepromptCount = 0;
     this._maxSingleToolCallReprompts = 3;
+
+    // Track which files were written during single-tool-call detection.
+    // If the LLM writes a new file (different path) since the last re-prompt,
+    // it's making progress — reset the counter instead of ending the session.
+    this._singleToolCallFiles = new Set();
+
+    // Track the last written file path for single-tool-call progress detection.
+    // Updated on every successful write_file or edit_file call.
+    this._lastWrittenFilePath = '';
+
+    // Track how many times the LLM has responded with empty/whitespace-only text
+    // after guidance (create_directory, npm init, etc.). Some models (e.g., Qwen 3.5)
+    // consistently stop generating after receiving guidance — the response is empty
+    // or whitespace-only. After 3 empty responses, force-end the session instead of
+    // looping forever.
+    this._emptyResponseCount = 0;
+    this._maxEmptyResponses = 3;
 
   }
 
@@ -467,7 +487,21 @@ export class Agent {
           lastSystemMsg.content.includes('use read_file() to examine the source code');
 
         if (!lastText && (hasCreateDirGuidance || hasNpmInitGuidance) && !this._hasWrittenEntryPoint) {
-          console.log('   ⚠️ Empty/whitespace-only response after create_directory/npm init guidance — re-prompting to use write_file()');
+          this._emptyResponseCount++;
+          console.log(`   ⚠️ Empty/whitespace-only response after create_directory/npm init guidance — re-prompting to use write_file() (#${this._emptyResponseCount}/${this._maxEmptyResponses})`);
+
+          // If the LLM has repeatedly responded with empty text after guidance,
+          // force-end the session — it's stuck and won't generate tool calls.
+          if (this._emptyResponseCount >= this._maxEmptyResponses) {
+            console.log('   ⚠️ LLM repeatedly responded with empty text after guidance — ending session.');
+            this.messages.push({
+              role: 'system',
+              content: 'You have repeatedly responded with empty text after being told to write source code. The session is ending. Please create the app manually.',
+            });
+            finished = true;
+            break;
+          }
+
           this.messages.push({
             role: 'system',
             content: 'STOP responding with text. You MUST call write_file() NOW to create the application source code file. Do NOT explain what you will do — actually call write_file() with the complete source code. Pass the file path (e.g., "app-name/app.js") and the complete source code as the content. Do NOT include a "result" field — that is for tool OUTPUT, not input. Just call write_file() with the correct arguments. Then call finish() AFTER the file is written successfully.',
@@ -479,7 +513,21 @@ export class Agent {
         // guidance. The LLM was told to fix the code but stopped generating entirely.
         // Re-prompt it to use read_file() and edit_file() to fix the bug.
         if (!lastText && hasTestAppFailureGuidance) {
-          console.log('   ⚠️ Empty/whitespace-only response after test_app failure guidance — re-prompting to fix the code');
+          this._emptyResponseCount++;
+          console.log(`   ⚠️ Empty/whitespace-only response after test_app failure guidance — re-prompting to fix the code (#${this._emptyResponseCount}/${this._maxEmptyResponses})`);
+
+          // If the LLM has repeatedly responded with empty text after guidance,
+          // force-end the session — it's stuck and won't generate tool calls.
+          if (this._emptyResponseCount >= this._maxEmptyResponses) {
+            console.log('   ⚠️ LLM repeatedly responded with empty text after guidance — ending session.');
+            this.messages.push({
+              role: 'system',
+              content: 'You have repeatedly responded with empty text after being told to fix the app. The session is ending. Please fix the app manually.',
+            });
+            finished = true;
+            break;
+          }
+
           this.messages.push({
             role: 'system',
             content: 'STOP responding with text. The app failed to run and you MUST fix it. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Do NOT explain what you will do — actually call read_file() first to see the code, then call edit_file() with the fix. After fixing, call test_app() to verify the fix works.',
@@ -624,8 +672,104 @@ export class Agent {
         // finishing. Some models (e.g., Qwen 3.5) generate only a single tool
         // call (write_file) and then stop. Inject guidance to continue.
         if (this._hadWriteWithoutTestOrFinish) {
-          this._singleToolCallRepromptCount++;
-          console.log(`   ⚠️ LLM wrote code but did not test or finish — re-prompting to continue (#${this._singleToolCallRepromptCount}/${this._maxSingleToolCallReprompts})`);
+          // Check if the LLM wrote a new file since the last re-prompt.
+          // If it's making progress (writing different files), reset the
+          // counter instead of incrementing it. This handles models like
+          // Qwen 3.5 that write one file per iteration — they ARE making
+          // progress, just slowly.
+          const lastWritePath = this._lastWrittenFilePath || '';
+          const isNewFile = lastWritePath && !this._singleToolCallFiles.has(lastWritePath);
+
+          if (isNewFile) {
+            // LLM wrote a new file — it's making progress. Reset the counter.
+            this._singleToolCallRepromptCount = 0;
+            this._singleToolCallFiles.add(lastWritePath);
+            console.log(`   ⚠️ LLM wrote new file "${lastWritePath}" but did not test or finish — re-prompting to continue (progress detected, counter reset)`);
+          } else {
+            this._singleToolCallRepromptCount++;
+            console.log(`   ⚠️ LLM wrote code but did not test or finish — re-prompting to continue (#${this._singleToolCallRepromptCount}/${this._maxSingleToolCallReprompts})`);
+          }
+
+          // If the LLM has written an entry point (e.g., app.js) but never tested,
+          // auto-run test_app() instead of just re-prompting with text. Some models
+          // (e.g., Qwen 3.5) write all the files but never call test_app() or finish().
+          // Auto-running test_app gives the LLM the test result so it can fix issues.
+          if (this._hasWrittenEntryPoint && this._singleToolCallRepromptCount > 0) {
+            // If the counter is already at the max, force-end instead of auto-running
+            // test_app again. The LLM has been re-prompted enough times and is not
+            // making progress (writing the same file repeatedly).
+            if (this._singleToolCallRepromptCount >= this._maxSingleToolCallReprompts) {
+              console.log('   ⚠️ LLM repeatedly wrote code without testing or finishing — ending session.');
+              this.messages.push({
+                role: 'system',
+                content: 'You have written code multiple times without testing the app or calling finish(). The session is ending. Please test the app manually.',
+              });
+              finished = true;
+              break;
+            }
+
+            console.log('   ⚠️ LLM has written entry point but never tested — auto-running test_app()...');
+            
+            // Auto-run test_app via the tool engine
+            const testResult = await this.toolEngine.execute('test_app', { args: '' });
+            
+            if (testResult.success) {
+              console.log(`   ✅ App runs successfully!`);
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: 'test_app',
+                  arguments: { args: '' },
+                  result: 'success',
+                  output: testResult.output,
+                  data: testResult.data,
+                }),
+              });
+              // Tell the LLM the app works and to call finish()
+              this.messages.push({
+                role: 'system',
+                content: 'The app runs successfully! Call finish() to complete the task.',
+              });
+            } else {
+              console.log(`   ❌ App failed: ${testResult.error}`);
+              this.messages.push({
+                role: 'tool',
+                content: JSON.stringify({
+                  tool: 'test_app',
+                  arguments: { args: '' },
+                  result: 'error',
+                  output: testResult.error,
+                  data: testResult.data,
+                }),
+              });
+              // Detect if the error is about a missing file (MODULE_NOT_FOUND or ENOENT).
+              // The LLM often forgets to write a required file and then edits existing
+              // files instead of creating the missing one.
+              const errorMsg = testResult.error || '';
+              const isMissingFile = /MODULE_NOT_FOUND|ENOENT|Cannot find module/i.test(errorMsg);
+              
+              let guidance;
+              if (isMissingFile) {
+                guidance = `The app failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
+                  `You MUST check which files exist using list_files(), then create the missing file using write_file(). ` +
+                  `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, ` +
+                  `then use write_file() to create the missing file. After creating the file, call test_app() again to verify.`;
+              } else {
+                guidance = `The app failed to run. Here is the error:\n\n${testResult.error}\n\n` +
+                  `You MUST fix this error. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. ` +
+                  `After fixing, call test_app() again to verify the fix works. Do NOT write more code — fix the existing code first.`;
+              }
+              
+              this.messages.push({
+                role: 'system',
+                content: guidance,
+              });
+            }
+            
+            // Reset the flag so we don't re-prompt again on the next text-only response
+            this._hadWriteWithoutTestOrFinish = false;
+            continue;
+          }
 
           if (this._singleToolCallRepromptCount >= this._maxSingleToolCallReprompts) {
             console.log('   ⚠️ LLM repeatedly wrote code without testing or finishing — ending session.');
@@ -1001,9 +1145,15 @@ export class Agent {
             // Track that a write/edit occurred in this iteration.
             // Used to detect when the LLM writes code but doesn't test or finish.
             this._hadWriteInCurrentIteration = true;
+            // Track the last written file path for single-tool-call progress detection.
+            // This is used to check if the LLM is making progress (writing new files)
+            // when it generates one tool call per iteration without testing or finishing.
+            const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
+            if (filePath) {
+              this._lastWrittenFilePath = filePath;
+            }
             // Track whether a CODE file (not just data like .json) was written.
             // The LLM sometimes writes recipes.json but still hasn't written app.js.
-            const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
             const codeExtensions = /\.(js|ts|jsx|tsx|py|rb|php|go|rs|c|cpp|java|mjs|cjs|html)$/i;
             if (codeExtensions.test(filePath)) {
               this._hasWrittenCodeFile = true;
@@ -1106,6 +1256,18 @@ export class Agent {
               guidance = `The edit_file() call on package.json failed because "type": "module" is ALREADY set in the file. The system automatically adds "type": "module" after npm init -y. You do NOT need to edit package.json to add it. Just proceed to write your source code files using write_file(). Do NOT retry the edit_file on package.json.`;
             } else if (tc.tool === 'edit_file') {
               guidance = `The edit_file() tool failed because it could not find a matching section in the file. This usually means the code you provided doesn't match the actual file content closely enough. Instead of retrying edit_file(), use write_file() to rewrite the ENTIRE file with the corrected code. write_file() will overwrite the file completely, which is the most reliable way to fix the issue. Use read_file() first to see the current content, then call write_file() with the complete corrected file content. Do NOT retry edit_file() — use write_file() instead.`;
+            } else if (tc.tool === 'write_file' && result.error?.includes('monolithic entry point')) {
+              // Monolithic file detection: the LLM wrote too much code in a single entry point.
+              // The error message from write_file already contains detailed guidance about
+              // creating subdirectories and splitting code. We add an additional system message
+              // to reinforce this and prevent the LLM from writing a different file instead.
+              const filePath = tc.arguments?.path || '';
+              const appDir = filePath.split('/')[0];
+              guidance = `The file "${filePath}" was rejected because it is too large and contains too many function definitions. You MUST split this code into separate modules:\n\n` +
+                `1. First, create subdirectories: create_directory("${appDir}/controllers"), create_directory("${appDir}/services"), create_directory("${appDir}/utils")\n` +
+                `2. Then write SMALLER files — each file should have ONE responsibility (e.g., one controller, one service)\n` +
+                `3. Keep "${filePath.split('/').pop()}" thin — only imports and the main execution flow (under ~50 lines)\n\n` +
+                `Do NOT try to write the same large file again. Do NOT write a different file that also has too much code. Split the functionality into separate modules first, then write each module as a small file.`;
             } else {
               guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
             }
@@ -1489,21 +1651,36 @@ export class Agent {
 
                   // Inject guidance telling the LLM to fix the code
                   const attemptsLeft = this._maxSelfHealCount - this._selfHealCount;
+                  
+                  // Detect if the error is about a missing file (MODULE_NOT_FOUND or ENOENT).
+                  // The LLM often forgets to write a required file (e.g., controllers/todoController.js)
+                  // and then edits app.js instead of creating the missing file. We need to tell the
+                  // LLM to check which files exist and create the missing one.
+                  const errorMsg = testResult.error || '';
+                  const isMissingFile = /MODULE_NOT_FOUND|ENOENT|Cannot find module/i.test(errorMsg);
+                  
+                  let guidance;
+                  if (isMissingFile) {
+                    guidance = `The app "${appDir}" failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
+                      `You MUST check which files exist in the app directory using list_files() with path "${appDir}", then create the missing file using write_file(). ` +
+                      `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, then use write_file() to create the missing file. ` +
+                      `After creating the file, call test_app() again to verify the fix works.\n\n` +
+                      `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                  } else {
+                    guidance = `The app "${appDir}" failed to run. Here is the error:\n\n${testResult.error}\n\n` +
+                      `You MUST fix this error before finishing. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. ` +
+                      `After fixing, call test_app() again to verify the fix works. Do NOT call finish() until the app runs successfully.\n\n` +
+                      `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.\n\n` +
+                      `Common issues:\n` +
+                      `- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire(). Remember: all new Node.js apps use ESM (type: module) by default — require() does NOT work in ES modules.\n` +
+                      `- If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports\n` +
+                      `- If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install\n` +
+                      `- If the error is a TypeError (e.g., "cannot read properties of undefined"), check the API response structure — the API may return data in a different format than expected`;
+                  }
+                  
                   this.messages.push({
                     role: 'system',
-                    content: `The app "${appDir}" failed to run. Here is the error:
-
-${testResult.error}
-
-You MUST fix this error before finishing. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. After fixing, call test_app() again to verify the fix works. Do NOT call finish() until the app runs successfully.
-
-You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.
-
-Common issues:
-- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire(). Remember: all new Node.js apps use ESM (type: module) by default — require() does NOT work in ES modules.
-- If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports
-- If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install
-- If the error is a TypeError (e.g., "cannot read properties of undefined"), check the API response structure — the API may return data in a different format than expected`,
+                    content: guidance,
                   });
 
                   // Do NOT set finished = true — the LLM gets a chance to fix the code
