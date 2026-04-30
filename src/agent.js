@@ -1210,10 +1210,25 @@ export class Agent {
 
             const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
             if (matchedError) {
-              // Track repeated runtime errors for the same command to prevent
+              // Track repeated runtime errors for the same or similar command to prevent
               // the LLM from retrying the same failing command instead of fixing the code.
-              // The LLM often ignores the guidance and retries the exact same command.
-              if (cmd === this._lastRunCommand) {
+              // The LLM often ignores the guidance and retries the exact same command,
+              // or retries with slightly different arguments (e.g., different placeholder
+              // paths like "path/to/your/file.json" vs "path/to/your/data.json").
+              //
+              // We use fuzzy matching: if the base command (e.g., "node app.js") is the
+              // same as the last run command, treat it as a retry even if the arguments
+              // differ slightly. This catches cases where the LLM changes a placeholder
+              // path but still hasn't fixed the underlying code issue.
+              const getBaseCommand = (c) => {
+                // Extract the base command (e.g., "node app.js" from "node app.js path/to/file.json")
+                const match = c.trim().match(/^(node|python3?|deno|bun)\s+(\S+\.\w+)/i);
+                return match ? `${match[1]} ${match[2]}` : c;
+              };
+              const currentBase = getBaseCommand(cmd);
+              const lastBase = getBaseCommand(this._lastRunCommand);
+
+              if (currentBase === lastBase && this._lastRunCommand) {
                 this._runtimeErrorCount++;
               } else {
                 this._runtimeErrorCount = 1;

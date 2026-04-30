@@ -924,6 +924,32 @@ Do NOT write everything into a single file. Split the functionality into separat
           };
         }
 
+        // Detect placeholder paths in command arguments — the LLM often uses
+        // generic placeholder paths like "path/to/your/file.json", "your-file.csv",
+        // "data.csv", "input.txt" etc. instead of actual file paths. These will
+        // fail at runtime because the files don't exist.
+        // We check for common placeholder patterns in the command string.
+        const placeholderPathPatterns = [
+          /path\/to\/your\//i,           // path/to/your/file.json
+          /path\/to\//i,                  // path/to/file.json
+          /\/your[-_][a-z]+\.[a-z]+/i,    // /your-file.csv, /your_data.json
+          /\/sample[-_][a-z]+\.[a-z]+/i,  // /sample-file.csv, /sample_data.json
+          /\/example[-_][a-z]+\.[a-z]+/i, // /example-file.csv
+          /\/test[-_][a-z]+\.[a-z]+/i,    // /test-file.csv (when used as a data file arg, not a source file)
+          /\/input\.[a-z]+/i,             // /input.txt, /input.csv
+          /\/output\.[a-z]+/i,            // /output.txt, /output.csv
+          /\/data\.[a-z]+/i,              // /data.json, /data.csv
+          /\/config\.[a-z]+/i,            // /config.json, /config.yaml
+        ];
+        const hasPlaceholderPath = placeholderPathPatterns.some(p => p.test(command));
+        if (hasPlaceholderPath) {
+          return {
+            success: false,
+            error: `The command "${command}" contains a placeholder/generic file path (e.g., "path/to/your/file.json", "your-file.csv", "input.txt") that does not exist. You must use an actual file path that exists in the project. If the app needs a data file, create it first using write_file() with real data, then run the app with the actual filename. Do NOT use placeholder paths like "path/to/your/" or generic names like "input.txt" — use real file paths.`,
+            data: { exitCode: null, stdout: '', stderr: '' },
+          };
+        }
+
         // Resolve working directory: use cwd if provided, otherwise workspace root.
         // If no cwd is provided but we have a current app context, auto-set cwd to that app.
         let effectiveCwd = cwd;
@@ -939,15 +965,38 @@ Do NOT write everything into a single file. Split the functionality into separat
           }
         }
 
-        // Pre-execution check: verify npm packages exist and are compatible before installing.
-        // The LLM often picks non-existent or broken packages (e.g., "curses").
-        // Run `npm view <pkg>` to check if the package exists on the registry and get its metadata.
-        // For multi-package installs (e.g., "npm install figlet cfonts"), we check ALL packages
-        // first and report which ones are valid and which aren't, so the LLM can retry with
-        // just the valid packages.
+        // Pre-execution check: detect web server / HTTP framework packages being installed
+        // for what should be a CLI/console app. The LLM often installs express, http, etc.
+        // when the user asked for a CLI tool. We detect these and guide the LLM to use
+        // native Node.js modules instead.
+        const webFrameworkPackages = new Set([
+          'express', 'http', 'https', 'koa', 'fastify', 'hapi', 'restify',
+          'express-generator', 'express-handlebars', 'pug', 'ejs', 'mustache',
+          'body-parser', 'cors', 'morgan', 'compression', 'cookie-parser',
+          'express-session', 'passport', 'passport-local', 'helmet',
+          'socket.io', 'ws', 'websocket',
+        ]);
         const npmInstallMatch = command.trim().match(/^npm\s+install\s+(.+)$/);
         if (npmInstallMatch) {
           const packages = npmInstallMatch[1].split(/\s+/).filter(p => !p.startsWith('-') && !p.startsWith('@'));
+
+          // Check if any of the requested packages are web framework packages.
+          // If so, guide the LLM to use native Node.js modules instead.
+          const webPackages = packages.filter(p => webFrameworkPackages.has(p));
+          if (webPackages.length > 0) {
+            const webPkgList = webPackages.map(p => `"${p}"`).join(', ');
+            return {
+              success: false,
+              error: `You are installing web framework packages (${webPkgList}) but the user asked for a CLI/console app. Web frameworks like Express are for building HTTP servers, not CLI tools. Node.js has built-in modules for CLI apps:\n\n` +
+                `• Use native \`fs\` and \`path\` modules for file I/O instead of external packages\n` +
+                `• Use native \`child_process\` (execSync, spawnSync) for running system commands\n` +
+                `• Use native \`os\` module for system information (CPU, memory, network interfaces)\n` +
+                `• Use native \`readline\` or \`readline-sync\` for user input in CLI apps\n` +
+                `• Use \`console.log\` / \`console.table\` for formatted output\n\n` +
+                `Do NOT install web framework packages for a CLI app. Remove them from the install command and use native Node.js modules instead. If you need a package for CLI-specific features (e.g., chalk for colors, figlet for ASCII art), that's fine — but do NOT install web servers.`,
+              data: { exitCode: null, stdout: '', stderr: '' },
+            };
+          }
 
           // Track valid and invalid packages for multi-package installs
           const validPackages = [];
