@@ -219,8 +219,8 @@ describe('Agent — finish() interception', () => {
     // Verify proactive guidance was injected after npm install
     const systemMessages = agent.messages.filter(m => m.role === 'system');
     const guidanceMessage = systemMessages.find(m =>
-      (m.content.includes('Dependencies installed successfully') || m.content.includes('Project initialized successfully')) &&
-      m.content.includes('write the main application entry point')
+      m.content.includes('Project initialized successfully') &&
+      m.content.includes('structure your app with controllers')
     );
     assert.ok(guidanceMessage, 'Should inject proactive guidance after npm install');
 

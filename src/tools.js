@@ -383,7 +383,7 @@ export class ToolEngine {
         params: ['path', 'content'],
       },
       edit_file: {
-        desc: "Edit an existing file by replacing text. Use write_file to create NEW files. Provide ONLY the new code with enough surrounding context (e.g., the function signature) so the tool can locate the right section using diff-based matching. Do NOT include old_string — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match.",
+        desc: "Edit an existing file by replacing text. Use write_file to create NEW files. Provide ONLY the new code with enough surrounding context (e.g., the function signature) so the tool can locate the right section using diff-based matching. Do NOT include old_string — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match. IMPORTANT: If edit_file fails with 'Could not find a matching section', do NOT retry edit_file — use write_file() to rewrite the ENTIRE file instead.",
         params: ['path', 'file_path', 'new_string'],
       },
       list_files: {

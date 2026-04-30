@@ -172,6 +172,13 @@ Search for patterns in files using regex. Uses `grep` under the hood.
 
 Create a directory (and parent directories if needed). For top-level app directories (direct children of the workdir), automatically initializes a git repository.
 
+**Use this to create controller/service subdirectories** when structuring your app. For example:
+```
+create_directory("my-app/controllers")
+create_directory("my-app/services")
+create_directory("my-app/utils")
+```
+
 **Parameters:**
 
 | Parameter | Type | Required | Description |

@@ -323,6 +323,37 @@ src/agent.js          Agent loop: sends messages to LLM, parses responses,
      └── src/workspace.js   Workdir management with per-app git repos
 ```
 
+## LLM Application Architecture Guidance
+
+Reside's system prompt includes built-in guidance that tells the LLM to structure generated applications with a **controller pattern** — separating concerns into dedicated modules rather than writing everything into a single monolithic entry point file.
+
+When the LLM builds an app, it is instructed to follow this structure:
+
+```
+my-app/
+├── app.js              # Thin entry point — imports, config, server start
+├── controllers/        # Route handlers / business logic per domain
+│   ├── weatherController.js
+│   └── userController.js
+├── services/           # Business logic / data access layer
+│   ├── weatherService.js
+│   └── ...
+├── middleware/         # Express middleware (if applicable)
+├── models/             # Data models / schemas
+├── utils/              # Helper functions
+└── config/             # Configuration
+```
+
+**Key principles:**
+- **`app.js`** stays minimal (~50 lines max): imports, middleware setup, route mounting, server startup
+- **Controllers** handle routing and response formatting for a specific domain
+- **Services** contain the actual business logic (API calls, database queries, file I/O)
+- **Utils** hold pure helper functions (date formatting, validation, string manipulation)
+- Each file has a single responsibility; split files that exceed ~200 lines
+- For smaller apps (under ~100 lines total), a single file is acceptable
+
+This guidance is embedded in the system prompt at [`src/config.js`](src/config.js:149) and applies to all apps the LLM generates.
+
 ## Why Reside?
 
 Most agentic IDE plugins don't understand Qwen's JSON tool call format properly. They expect OpenAI-style `function_call` structures, but Qwen outputs tool calls as JSON objects embedded in the response text — either wrapped in markdown code fences (2.5 Coder) or as raw JSON (3.5).

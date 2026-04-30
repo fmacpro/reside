@@ -301,6 +301,10 @@ export class Agent {
     // commands during normal app building (npm init, npm install, npm install -g, http-server, etc.).
     // Triggering loop detection on 4+ execute_command calls would interrupt the normal app-building
     // process and cause the LLM to fail to produce a working app.
+    // write_file and create_directory are also excluded because the controller pattern guidance
+    // encourages the LLM to create multiple subdirectories (controllers/, services/, utils/) and
+    // write multiple source files (app.js, controllers/*.js, services/*.js) in sequence.
+    // Triggering loop detection on these would interrupt legitimate multi-file app creation.
     let sameToolCount = 0;
     for (let i = history.length - 1; i >= Math.max(0, history.length - 6); i--) {
       if (history[i].tool === last.tool) {
@@ -309,8 +313,9 @@ export class Agent {
     }
 
     // 4+ calls to the same tool in a row = loop (e.g., fetch_url on different URLs)
-    // execute_command is excluded — see comment above.
-    if (sameToolCount >= 4 && last.tool !== 'execute_command') return true;
+    // execute_command, write_file, and create_directory are excluded — see comment above.
+    const excludedFromMultiCallCheck = new Set(['execute_command', 'write_file', 'create_directory']);
+    if (sameToolCount >= 4 && !excludedFromMultiCallCheck.has(last.tool)) return true;
 
     return false;
   }
@@ -446,9 +451,11 @@ export class Agent {
         const lastSystemMsg = this.messages.slice().reverse().find(m => m.role === 'system');
         const hasCreateDirGuidance = lastSystemMsg?.content?.includes('Directory created successfully') &&
           (lastSystemMsg.content.includes('write the main application source code file') ||
-           lastSystemMsg.content.includes('write the source code file using write_file'));
+           lastSystemMsg.content.includes('write the source code file using write_file') ||
+           lastSystemMsg.content.includes('structure your app with controllers'));
         const hasNpmInitGuidance = lastSystemMsg?.content?.includes('Project initialized successfully') &&
-          lastSystemMsg.content.includes('write the main application entry point');
+          (lastSystemMsg.content.includes('write the main application entry point') ||
+           lastSystemMsg.content.includes('structure your app with controllers'));
         const hasTestAppFailureGuidance = lastSystemMsg?.content?.includes('called test_app() but you did NOT modify any code') &&
           lastSystemMsg.content.includes('use read_file() to examine the source code');
         // Detect: LLM responded with text-only after a known runtime error was injected
@@ -715,7 +722,7 @@ export class Agent {
           if (isTopLevel && !this._hasWrittenEntryPoint) {
             this.messages.push({
               role: 'system',
-              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN write the source code file using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code file first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };',
+              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN structure your app with controllers and write source files using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code files first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };\n\nAPP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
             });
           }
         }
@@ -1021,7 +1028,7 @@ export class Agent {
             if (isInitOrInstall && !this._hasWrittenEntryPoint) {
               this.messages.push({
                 role: 'system',
-                content: 'Project initialized successfully. Now you MUST write the main application entry point file (e.g., app.js, index.js, server.js) using write_file() before doing anything else. This file should contain the actual application logic — not just data files like .json. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — write the main code file first.',
+                content: 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.',
               });
             }
           }
@@ -1039,6 +1046,16 @@ export class Agent {
           }
         } else {
           console.log(`   ❌ ${result.error}`);
+
+          // When edit_file fails (e.g., "Could not find a matching section"),
+          // reset _hasModifiedCodeSinceLastTest to false so the next test_app
+          // call correctly triggers retry detection. The edit didn't actually
+          // succeed, so the code wasn't modified — the LLM needs to try again
+          // or use a different approach (e.g., write_file to rewrite the file).
+          if (tc.tool === 'edit_file') {
+            this._hasModifiedCodeSinceLastTest = false;
+          }
+
           // When a critical tool fails, inject guidance to prevent the LLM from
           // blindly continuing to call more tools (e.g., trying to run a file
           // that was never created, or installing deps in a non-existent dir).
@@ -1086,6 +1103,8 @@ export class Agent {
             let guidance;
             if (tc.tool === 'edit_file' && (tc.arguments?.file_path || '').endsWith('package.json')) {
               guidance = `The edit_file() call on package.json failed because "type": "module" is ALREADY set in the file. The system automatically adds "type": "module" after npm init -y. You do NOT need to edit package.json to add it. Just proceed to write your source code files using write_file(). Do NOT retry the edit_file on package.json.`;
+            } else if (tc.tool === 'edit_file') {
+              guidance = `The edit_file() tool failed because it could not find a matching section in the file. This usually means the code you provided doesn't match the actual file content closely enough. Instead of retrying edit_file(), use write_file() to rewrite the ENTIRE file with the corrected code. write_file() will overwrite the file completely, which is the most reliable way to fix the issue. Use read_file() first to see the current content, then call write_file() with the complete corrected file content. Do NOT retry edit_file() — use write_file() instead.`;
             } else {
               guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
             }
