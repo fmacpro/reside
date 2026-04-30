@@ -521,6 +521,36 @@ export class ToolEngine {
           }
         }
 
+        // Detect web framework imports in source files — the LLM often writes Express
+        // Router code in controller files even for CLI apps, bypassing the npm install
+        // check (which only catches "npm install express"). We detect common web framework
+        // import patterns and guide the LLM to use native Node.js modules instead.
+        const webFrameworkImports = [
+          /from\s+["']express["']/i,
+          /from\s+["']koa["']/i,
+          /from\s+["']fastify["']/i,
+          /from\s+["']hapi["']/i,
+          /from\s+["']restify["']/i,
+          /require\s*\(\s*["']express["']\s*\)/i,
+          /require\s*\(\s*["']koa["']\s*\)/i,
+          /require\s*\(\s*["']fastify["']\s*\)/i,
+          /require\s*\(\s*["']hapi["']\s*\)/i,
+          /require\s*\(\s*["']restify["']\s*\)/i,
+        ];
+        const hasWebFrameworkImport = webFrameworkImports.some(p => p.test(contentStr));
+        if (hasWebFrameworkImport && /\.(js|mjs|cjs|ts)$/i.test(path)) {
+          return {
+            success: false,
+            error: `The file "${path}" imports a web framework (Express, Koa, Fastify, etc.) but this should be a CLI/console app. Web frameworks are for building HTTP servers, not CLI tools. Node.js has built-in modules for CLI apps:\n\n` +
+              `• Use native \`fs\` and \`path\` modules for file I/O instead of external packages\n` +
+              `• Use native \`child_process\` (execSync, spawnSync) for running system commands\n` +
+              `• Use native \`os\` module for system information (CPU, memory, network interfaces)\n` +
+              `• Use native \`readline\` or \`readline-sync\` for user input in CLI apps\n` +
+              `• Use \`console.log\` / \`console.table\` for formatted output\n\n` +
+              `Remove the web framework import and rewrite the file using native Node.js modules. If you need to fetch data from an API, use the native \`fetch\` API (available in Node.js 18+) or install a lightweight HTTP client like \`node-fetch\`.`,
+          };
+        }
+
         // Detect monolithic entry point files that should be split into controllers/services.
         // The LLM often writes everything into a single app.js file instead of following
         // the controller pattern guidance in the system prompt. We detect this by checking
