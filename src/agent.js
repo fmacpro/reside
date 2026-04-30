@@ -715,7 +715,7 @@ export class Agent {
           if (isTopLevel && !this._hasWrittenEntryPoint) {
             this.messages.push({
               role: 'system',
-              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN write the source code file using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code file first.',
+              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN write the source code file using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code file first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };',
             });
           }
         }
@@ -1374,7 +1374,7 @@ You MUST fix this error before finishing. Use read_file() to examine the source 
 You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.
 
 Common issues:
-- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire()
+- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire(). Remember: all new Node.js apps use ESM (type: module) by default — require() does NOT work in ES modules.
 - If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports
 - If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install
 - If the error is a TypeError (e.g., "cannot read properties of undefined"), check the API response structure — the API may return data in a different format than expected`,
