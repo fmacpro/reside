@@ -470,6 +470,96 @@ export class ToolEngine {
           };
         }
 
+        // Detect when the LLM writes package.json directly instead of using npm init -y.
+        // The LLM should use execute_command({"command":"npm init -y","cwd":"app-name"}) to
+        // create package.json, which the system then auto-updates with "type": "module".
+        // Writing package.json directly bypasses this and often results in "type": "commonjs"
+        // which breaks ESM import syntax in the source code.
+        if (path.endsWith('package.json')) {
+          let pkgObj;
+          try {
+            pkgObj = JSON.parse(contentStr);
+          } catch {
+            return {
+              success: false,
+              error: `The content for "${path}" is not valid JSON. Use execute_command({"command":"npm init -y","cwd":"<app-name>"}) to create package.json instead of writing it manually. The system will automatically set "type": "module" for ES module support.`,
+            };
+          }
+          // If the LLM wrote package.json with "type": "commonjs", reject it and tell
+          // the LLM to use npm init -y instead. The LLM often writes package.json directly
+          // with "type": "commonjs" but then uses import/export syntax in the source code,
+          // which causes "Cannot use import statement outside a module" errors.
+          if (pkgObj.type === 'commonjs') {
+            return {
+              success: false,
+              error: `The package.json for "${path}" has "type": "commonjs" but your source code uses import/export syntax. Do NOT write package.json manually — use execute_command({"command":"npm init -y","cwd":"<app-name>"}) to create it. The system will automatically set "type": "module" for ES module support. If you need to add dependencies, use npm install <package> instead of editing package.json directly.`,
+            };
+          }
+        }
+
+        // Detect monolithic entry point files that should be split into controllers/services.
+        // The LLM often writes everything into a single app.js file instead of following
+        // the controller pattern guidance in the system prompt. We detect this by checking
+        // if the file is an entry point (app.js, index.js, etc.) with multiple distinct
+        // function definitions that should be separate modules.
+        const entryPointNames = new Set([
+          'app.js', 'index.js', 'server.js', 'main.js',
+          'app.ts', 'index.ts', 'server.ts', 'main.ts',
+          'app.py', 'main.py',
+          'app.rb', 'main.rb',
+          'app.go', 'main.go',
+          'app.rs', 'main.rs',
+          'index.php',
+          'app.mjs', 'index.mjs',
+          'app.cjs', 'index.cjs',
+        ]);
+        const fileName = path.split('/').pop();
+        const isEntryPoint = entryPointNames.has(fileName);
+        const contentLines = contentStr.split('\n');
+        const lineCount = contentLines.length;
+
+        if (isEntryPoint && lineCount > 80) {
+          // Count the number of function/async function definitions in the file.
+          // If there are 3+ distinct function definitions, the file is doing too much.
+          const funcDefs = contentStr.match(/^(async\s+)?function\s+\w+\s*\(/gm);
+          const funcCount = funcDefs ? funcDefs.length : 0;
+
+          // Also count arrow functions assigned to const/let/var at the top level
+          // (not inside other functions). These are also "concerns" that should be
+          // separate modules.
+          const arrowFuncs = contentStr.match(/^(export\s+)?(const|let|var)\s+\w+\s*=\s*(async\s+)?\([^)]*\)\s*=>/gm);
+          const arrowCount = arrowFuncs ? arrowFuncs.length : 0;
+
+          const totalConcerns = funcCount + arrowCount;
+
+          // If the entry point has 3+ function/arrow definitions AND is over 80 lines,
+          // it's doing too much. Guide the LLM to split into controllers/services.
+          if (totalConcerns >= 3) {
+            // Extract the app directory name from the path
+            const appDir = path.split('/')[0];
+            return {
+              success: false,
+              error: `The file "${path}" is a monolithic entry point (${lineCount} lines, ${totalConcerns} function definitions). It should be split into separate modules following the controller pattern:
+
+1. Keep "${fileName}" thin — only imports, config, and the main execution flow (under ~50 lines).
+2. Move business logic into controllers/ and services/ directories.
+3. Create subdirectories first using create_directory(), then write the individual files.
+
+For example, for a system info app:
+  • create_directory("${appDir}/controllers") — for route handlers / menu option handlers
+  • create_directory("${appDir}/services") — for business logic (CPU, GPU, memory queries)
+  • create_directory("${appDir}/utils") — for helper functions (formatting, display)
+
+Then write the files:
+  • write_file("${appDir}/services/systemInfoService.js", ...) — CPU, GPU, memory query functions
+  • write_file("${appDir}/controllers/menuController.js", ...) — menu display and option handling
+  • write_file("${appDir}/app.js", ...) — thin entry point that imports and calls the controller
+
+Do NOT write everything into a single file. Split the functionality into separate modules.`,
+            };
+          }
+        }
+
         // Detect placeholder/stub content — the LLM should write real code, not placeholders.
         // Common patterns: "// Your code here", "// TODO", "function main() { }" (empty body),
         // or very short files that are clearly stubs.
