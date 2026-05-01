@@ -804,6 +804,47 @@ export class Agent {
           '  const __dirname = dirname(__filename);\n\n' +
           'REMEMBER: Do NOT edit package.json to remove "type": "module" — that is NEVER the right fix. ' +
           'If you get "require is not defined in ES module scope", fix the code to use import/export — do NOT change package.json.\n\n' +
+          '## Node.js Built-in Modules — Do NOT Install These\n\n' +
+          'The following modules are built into Node.js and are available natively. Do NOT try to install them via npm:\n\n' +
+          '  import fs from "node:fs";              // File system\n' +
+          '  import path from "node:path";          // Path utilities\n' +
+          '  import os from "node:os";              // Operating system (CPU, memory, network, hostname)\n' +
+          '  import http from "node:http";          // HTTP server/client\n' +
+          '  import https from "node:https";        // HTTPS server/client\n' +
+          '  import url from "node:url";            // URL parsing\n' +
+          '  import util from "node:util";          // Utilities (promisify, inspect)\n' +
+          '  import events from "node:events";      // Event emitter\n' +
+          '  import stream from "node:stream";      // Streams\n' +
+          '  import buffer from "node:buffer";      // Buffer, Blob\n' +
+          '  import crypto from "node:crypto";      // Cryptography\n' +
+          '  import assert from "node:assert";      // Assertions\n' +
+          '  import net from "node:net";            // TCP\n' +
+          '  import dns from "node:dns";            // DNS\n' +
+          '  import dgram from "node:dgram";        // UDP\n' +
+          '  import readline from "node:readline";  // CLI input (built-in, no install needed)\n' +
+          '  import tls from "node:tls";            // TLS/SSL\n' +
+          '  import zlib from "node:zlib";          // Compression\n' +
+          '  import querystring from "node:querystring";  // Query string\n' +
+          '  import timers from "node:timers";      // Timers\n' +
+          '  import tty from "node:tty";            // TTY\n' +
+          '  import vm from "node:vm";              // Virtual machine\n' +
+          '  import worker_threads from "node:worker_threads";  // Workers\n' +
+          '  import cluster from "node:cluster";    // Clustering\n' +
+          '  import module from "node:module";      // Modules (createRequire, builtinModules)\n' +
+          '  import process from "node:process";    // Process (env, argv, cwd, exit)\n' +
+          '  import console from "node:console";    // Console (log, error, table)\n' +
+          '  import child_process from "node:child_process";  // exec, execSync, spawn\n' +
+          '  import perf_hooks from "node:perf_hooks";  // Performance\n' +
+          '  import async_hooks from "node:async_hooks";  // Async hooks\n' +
+          '  import inspector from "node:inspector";  // Inspector\n' +
+          '  import test from "node:test";          // Test runner\n' +
+          '  import fs from "node:fs/promises";     // Promise-based file system\n' +
+          '  import timers from "node:timers/promises";  // Promise-based timers\n' +
+          '  import stream from "node:stream/promises";  // Promise-based streams\n' +
+          '  import readline from "node:readline/promises";  // Promise-based readline\n\n' +
+          'Prefer built-in modules over external packages. For example, use os (built-in) instead of os-utils (deprecated), ' +
+          'use readline (built-in) instead of readline-sync (external), use child_process (built-in) instead of execa (external). ' +
+          'Only install external packages when built-in modules are genuinely insufficient.\n\n' +
           'APP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). You can place the entry point at the app root (e.g., app.js) or inside a src/ subdirectory (e.g., src/app.js) — both patterns are supported. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
       });
     }
@@ -1146,7 +1187,48 @@ export class Agent {
             '✅ CORRECT: export function myFunction() { ... }\n' +
             '❌ WRONG: const fs = require("fs"); — will crash with "require is not defined in ES module scope"\n' +
             '❌ WRONG: const fetch = require("node-fetch"); — node-fetch v3+ is ESM-only, use global fetch() instead\n\n' +
-            'Do NOT edit package.json to remove "type": "module" — that is NEVER the right fix. Fix the code to use import/export syntax instead.';
+            'Do NOT edit package.json to remove "type": "module" — that is NEVER the right fix. Fix the code to use import/export syntax instead.\n\n' +
+            '## Node.js Built-in Modules — Do NOT Install These\n\n' +
+            'The following modules are built into Node.js and are available natively. Do NOT try to install them via npm:\n\n' +
+            '  import fs from "node:fs";              // File system\n' +
+            '  import path from "node:path";          // Path utilities\n' +
+            '  import os from "node:os";              // Operating system (CPU, memory, network, hostname)\n' +
+            '  import http from "node:http";          // HTTP server/client\n' +
+            '  import https from "node:https";        // HTTPS server/client\n' +
+            '  import url from "node:url";            // URL parsing\n' +
+            '  import util from "node:util";          // Utilities (promisify, inspect)\n' +
+            '  import events from "node:events";      // Event emitter\n' +
+            '  import stream from "node:stream";      // Streams\n' +
+            '  import buffer from "node:buffer";      // Buffer, Blob\n' +
+            '  import crypto from "node:crypto";      // Cryptography\n' +
+            '  import assert from "node:assert";      // Assertions\n' +
+            '  import net from "node:net";            // TCP\n' +
+            '  import dns from "node:dns";            // DNS\n' +
+            '  import dgram from "node:dgram";        // UDP\n' +
+            '  import readline from "node:readline";  // CLI input (built-in, no install needed)\n' +
+            '  import tls from "node:tls";            // TLS/SSL\n' +
+            '  import zlib from "node:zlib";          // Compression\n' +
+            '  import querystring from "node:querystring";  // Query string\n' +
+            '  import timers from "node:timers";      // Timers\n' +
+            '  import tty from "node:tty";            // TTY\n' +
+            '  import vm from "node:vm";              // Virtual machine\n' +
+            '  import worker_threads from "node:worker_threads";  // Workers\n' +
+            '  import cluster from "node:cluster";    // Clustering\n' +
+            '  import module from "node:module";      // Modules (createRequire, builtinModules)\n' +
+            '  import process from "node:process";    // Process (env, argv, cwd, exit)\n' +
+            '  import console from "node:console";    // Console (log, error, table)\n' +
+            '  import child_process from "node:child_process";  // exec, execSync, spawn\n' +
+            '  import perf_hooks from "node:perf_hooks";  // Performance\n' +
+            '  import async_hooks from "node:async_hooks";  // Async hooks\n' +
+            '  import inspector from "node:inspector";  // Inspector\n' +
+            '  import test from "node:test";          // Test runner\n' +
+            '  import fs from "node:fs/promises";     // Promise-based file system\n' +
+            '  import timers from "node:timers/promises";  // Promise-based timers\n' +
+            '  import stream from "node:stream/promises";  // Promise-based streams\n' +
+            '  import readline from "node:readline/promises";  // Promise-based readline\n\n' +
+            'Prefer built-in modules over external packages. For example, use os (built-in) instead of os-utils (deprecated), ' +
+            'use readline (built-in) instead of readline-sync (external), use child_process (built-in) instead of execa (external). ' +
+            'Only install external packages when built-in modules are genuinely insufficient.';
         }
 
         this.messages.push({
