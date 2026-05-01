@@ -546,6 +546,66 @@ function repairJson(str) {
   
   result = fixedResult;
 
+  // Fix 4.5: Fix double-escaped newlines and other escape sequences.
+  // The LLM sometimes outputs \\n (escaped backslash + n) instead of \n
+  // (actual newline) inside JSON string values. For example:
+  //   {"content": "line1\\nline2"}
+  // instead of:
+  //   {"content": "line1\nline2"}
+  //
+  // In JSON, \\n means a literal backslash followed by 'n' (two characters).
+  // But the LLM intended it to be a newline character. We detect this by
+  // looking for \\n, \\t, \\r inside JSON strings and converting them to
+  // actual newlines/tabs/carriage returns (which will then be re-escaped
+  // by Fix 5 below).
+  //
+  // Strategy: Walk through the string tracking whether we're inside a JSON
+  // string. When we find \\n, \\t, or \\r (escaped backslash + n/t/r),
+  // replace with the actual control character.
+  {
+    let fixedResult = '';
+    let inStr = false;
+    let esc = false;
+    
+    for (let i = 0; i < result.length; i++) {
+      const ch = result[i];
+      
+      if (esc) {
+        esc = false;
+        // We found a backslash followed by another character.
+        // Check if this is \\n, \\t, or \\r (double-escaped control char).
+        if (inStr && ch === 'n') {
+          fixedResult += '\n'; // Actual newline
+        } else if (inStr && ch === 't') {
+          fixedResult += '\t'; // Actual tab
+        } else if (inStr && ch === 'r') {
+          fixedResult += '\r'; // Actual carriage return
+        } else {
+          fixedResult += '\\' + ch;
+        }
+        continue;
+      }
+      
+      if (ch === '\\' && inStr) {
+        esc = true;
+        continue;
+      }
+      
+      if (ch === '"') {
+        inStr = !inStr;
+      }
+      
+      fixedResult += ch;
+    }
+    
+    // If we were in an escape sequence at the end, add the backslash back
+    if (esc) {
+      fixedResult += '\\';
+    }
+    
+    result = fixedResult;
+  }
+
   // Fix 5: Escape unescaped control characters inside JSON strings.
   // The LLM sometimes outputs literal newlines, tabs, carriage returns, etc.
   // inside JSON string values instead of escaping them. For example:
