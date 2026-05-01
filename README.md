@@ -1,13 +1,13 @@
 # Reside
 
-A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands Qwen's native JSON tool call format — something most agentic IDE plugins get wrong.
+A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands native JSON tool call formats from Qwen, Granite, and other models — something most agentic IDE plugins get wrong.
 
 **Minimal dependencies.** Pure Node.js with optional Puppeteer for web search and content fetching.
 
 ## Key Features
 
 - **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
-- **Qwen-native** — Understands both Qwen 2.5 Coder (markdown-fenced JSON) and Qwen 3.5 (raw JSON with `thinking` field) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals, trailing commas, and single quotes.
+- **Model-native JSON tool calls** — Understands Qwen 2.5 Coder (markdown-fenced JSON), Qwen 3.5 (raw JSON with `thinking` field), and Granite 4.1 (raw JSON) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals, trailing commas, and single quotes.
 - **12 built-in tools** — Filesystem operations, web search (DuckDuckGo, no API key), URL content extraction, current time, and shell command execution — all with automatic error recovery and self-healing.
 - **Self-healing** — After the LLM writes an app, Reside automatically runs it and injects any runtime errors back into the conversation for the LLM to fix, with up to 3 fix attempts.
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
@@ -17,7 +17,7 @@ A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside underst
 Reside connects to a local LLM running in Ollama, gives it filesystem access through a set of tools, and lets it build projects inside a workdir. Each app/project directory gets its own independent git repository.
 
 ```
-You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5)
+You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5 / granite4.1)
             │
             └──> Workdir/
                     ├── my-app/        (git repo)
@@ -39,6 +39,7 @@ You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5)
 # Install a model if you haven't already
 ollama pull qwen2.5-coder:7b
 ollama pull qwen3.5:latest
+ollama pull granite4.1:8b
 ```
 
 ## Quick Start
@@ -203,7 +204,7 @@ Configuration is stored in `~/.config/reside/config.json`. You can also use envi
 
 ## Available Tools
 
-The LLM has access to 12 built-in tools. See the full [Tools Reference](docs/tools.md) for detailed documentation, parameters, examples, and behavior for each tool.
+The LLM has access to 13 built-in tools. See the full [Tools Reference](docs/tools.md) for detailed documentation, parameters, examples, and behavior for each tool.
 
 | Tool                                      | Description                                                                                              |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -270,8 +271,9 @@ Reside is model-agnostic and works with any Ollama model. It has been tested wit
 
 - **qwen2.5-coder:7b** — Uses markdown-fenced JSON format (` ```json {...} ``` `)
 - **qwen3.5:latest** — Uses raw JSON format (no fences, includes `thinking` field)
+- **granite4.1:8b** — Uses raw JSON format (no fences, no thinking field)
 
-The parser automatically detects and handles both formats. To use a different model:
+The parser automatically detects and handles all formats. To use a different model:
 
 ```bash
 node src/index.js --model llama3.2:latest "Your task here"
@@ -287,19 +289,49 @@ reside/
 │   ├── index.js              # CLI entry point with argument parsing
 │   ├── config.js             # Configuration system (file + env vars)
 │   ├── ollama.js             # Native Node.js HTTP Ollama API client
-│   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 formats)
-│   ├── tools.js              # Tool execution engine (12 tools)
-│   ├── fetchUrl.js           # URL fetching and article content extraction (zero deps)
-│   ├── search.js             # Puppeteer-based DuckDuckGo search + browser URL fetch
-│   ├── agent.js              # Main agent loop orchestrator
-│   └── workspace.js          # Workdir manager with per-app git repos
+│   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 + granite formats)
+│   ├── agent/                # Agent loop orchestrator
+│   │   ├── index.js          # Main agent loop
+│   │   ├── prompts/
+│   │   │   └── systemPrompt.js  # System prompt template
+│   │   └── utils/
+│   │       ├── briefToolStatus.js  # Compact tool status formatting
+│   │       └── renderText.js      # Text rendering utilities
+│   ├── tools/                # Tool execution engine (13 tools)
+│   │   ├── index.js          # Tool registry and dispatch
+│   │   ├── createDirectory.js
+│   │   ├── deleteFile.js
+│   │   ├── editFile.js
+│   │   ├── executeCommand.js
+│   │   ├── fetchUrl.js       # URL fetching (thin wrapper)
+│   │   ├── finish.js
+│   │   ├── getCurrentTime.js
+│   │   ├── listFiles.js
+│   │   ├── readFile.js
+│   │   ├── searchFiles.js
+│   │   ├── searchNpm.js
+│   │   ├── searchWeb.js      # Puppeteer-based DuckDuckGo search
+│   │   ├── testApp.js        # App testing with src/ entry point support
+│   │   ├── writeFile.js
+│   │   └── utils/
+│   │       ├── ensureDir.js
+│   │       ├── extractAppName.js
+│   │       ├── fetchUrl.js   # URL fetching and article content extraction (zero deps)
+│   │       ├── findBestMatch.js
+│   │       ├── resolvePath.js
+│   │       ├── search.js     # Puppeteer-based DuckDuckGo search engine
+│   │       ├── stringRepair.js
+│   │       ├── toolDefinitions.js
+│   │       └── workspace.js  # Workdir manager with per-app git repos
 ├── test/
+│   ├── agent.test.js         # Agent loop tests
 │   ├── config.test.js        # Config system tests
 │   ├── fetchUrl.test.js      # URL fetching tests (local test server)
 │   ├── integration.test.js   # End-to-end LLM simulation tests
 │   ├── parser.test.js        # JSON tool call parser tests
 │   ├── tools.test.js         # Tool execution engine tests
 │   ├── workspace.test.js     # Workspace manager tests
+│   ├── live_model_test.mjs   # Live CLI prompt tests against Ollama models
 │   ├── test-server.js        # Local HTTP test server for fetch tests
 │   └── fixtures/             # HTML test pages for local server
 └── workdir/                  # App/project directories (each with own git)
@@ -312,15 +344,16 @@ src/index.js          CLI argument parsing, routes to single-run or chat mode
      │
 src/config.js         Loads config from ~/.config/reside/config.json + env vars
      │
-src/agent.js          Agent loop: sends messages to LLM, parses responses,
+src/agent/index.js    Agent loop: sends messages to LLM, parses responses,
      │                executes tools, feeds results back, detects loops
      │
      ├── src/ollama.js      HTTP client for Ollama API
-     ├── src/parser.js      Parses Qwen's JSON tool call format
-     ├── src/tools.js       Tool execution engine (filesystem + web + time)
-     ├── src/fetchUrl.js    URL fetching & content extraction (zero deps)
-     ├── src/search.js      Puppeteer-based DuckDuckGo search + browser URL fetch
-     └── src/workspace.js   Workdir management with per-app git repos
+     ├── src/parser.js      Parses JSON tool call format (Qwen 2.5, Qwen 3.5, Granite)
+     ├── src/tools/         Tool execution engine (13 tools, modular)
+     │   ├── index.js       Tool registry and dispatch
+     │   ├── testApp.js     App testing with root + src/ entry point support
+     │   └── utils/         Shared utilities (workspace, fetchUrl, search, etc.)
+     └── src/agent/utils/   Agent utilities (briefToolStatus, renderText)
 ```
 
 ## LLM Application Architecture Guidance
@@ -356,6 +389,6 @@ This guidance is embedded in the system prompt at [`src/config.js`](src/config.j
 
 ## Why Reside?
 
-Most agentic IDE plugins don't understand Qwen's JSON tool call format properly. They expect OpenAI-style `function_call` structures, but Qwen outputs tool calls as JSON objects embedded in the response text — either wrapped in markdown code fences (2.5 Coder) or as raw JSON (3.5).
+Most agentic IDE plugins don't understand native JSON tool call formats from models like Qwen and Granite. They expect OpenAI-style `function_call` structures, but these models output tool calls as JSON objects embedded in the response text — either wrapped in markdown code fences (Qwen 2.5 Coder), as raw JSON with a `thinking` field (Qwen 3.5), or as plain raw JSON (Granite 4.1).
 
-Reside was built specifically to handle this format correctly, with zero dependencies and maximum efficiency.
+Reside was built specifically to handle these formats correctly, with zero dependencies and maximum efficiency.

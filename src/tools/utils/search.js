@@ -3,7 +3,7 @@
  * Uses puppeteer-extra with stealth plugin to bypass bot detection
  * and search DuckDuckGo Lite for results.
  *
- * @module search
+ * @module tools/utils/search
  */
 
 import puppeteer from 'puppeteer-extra';

@@ -1,6 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { fetchAndExtract } from '../src/fetchUrl.js';
+import { fetchAndExtract } from '../src/tools/utils/fetchUrl.js';
 import { TestServer } from './test-server.js';
 
 describe('fetchUrl - extractContent (no network)', () => {

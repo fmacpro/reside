@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Agent } from '../src/agent.js';
+import { Agent } from '../src/agent/index.js';
 import { DEFAULT_CONFIG } from '../src/config.js';
 
 /**

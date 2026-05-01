@@ -2,6 +2,8 @@
  * URL fetching and article content extraction.
  * Zero external dependencies — uses only Node.js built-in modules.
  * Content detection algorithm adapted from horseman-article-parser's contentDetector.js.
+ *
+ * @module tools/utils/fetchUrl
  */
 
 import { request as httpsRequest } from 'node:https';
@@ -927,7 +929,7 @@ function filterNoise(content) {
   const lines = content.split('\n');
   const filtered = lines.filter(line => {
     const trimmed = line.trim();
-    if (!trimmed) return true; // Keep empty lines (paragraph separators)
+    if (!trimmed)    return true; // Keep empty lines (paragraph separators)
 
     // Check if the line is primarily noise
     // Count noise words vs total words

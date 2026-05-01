@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'node:
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
-import { WorkspaceManager } from '../src/workspace.js';
+import { WorkspaceManager } from '../src/tools/utils/workspace.js';
 
 function createTestWorkdir() {
   const dir = mkdtempSync(join(tmpdir(), 'reside-ws-test-'));

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from 'node
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtempSync } from 'node:fs';
-import { ToolEngine } from '../src/tools.js';
+import { ToolEngine } from '../src/tools/index.js';
 
 /**
  * Helper: create a temp workspace for testing.

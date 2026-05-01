@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 import { loadConfig, saveConfig } from './config.js';
-import { Agent } from './agent.js';
+import { Agent } from './agent/index.js';
 import { OllamaClient } from './ollama.js';
-import { WorkspaceManager } from './workspace.js';
+import { WorkspaceManager } from './tools/utils/workspace.js';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
