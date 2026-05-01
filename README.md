@@ -1,13 +1,13 @@
 # Reside
 
-A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands native JSON tool call formats from Qwen, Granite, and other models — something most agentic IDE plugins get wrong.
+A simplified Node.js-based agentic IDE for local LLMs via Ollama. Reside understands native JSON tool call formats from Qwen, Granite, DeepSeek, and other models — something most agentic IDE plugins get wrong.
 
 **Minimal dependencies.** Pure Node.js with optional Puppeteer for web search and content fetching.
 
 ## Key Features
 
 - **Local & private** — Runs entirely on your machine via Ollama. No data leaves your computer.
-- **Model-native JSON tool calls** — Understands Qwen 2.5 Coder (markdown-fenced JSON), Qwen 3.5 (raw JSON with `thinking` field), and Granite 4.1 (raw JSON) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals, trailing commas, and single quotes.
+- **Model-native JSON tool calls** — Understands Qwen 2.5 Coder (markdown-fenced JSON), Qwen 3.5 (raw JSON with `thinking` field), Granite 4.1 (raw JSON), and DeepSeek Coder V2 (Unicode XML-like tags with JSON arguments) tool call formats out of the box. Automatically repairs common LLM JSON mistakes like template literals, trailing commas, and single quotes.
 - **12 built-in tools** — Filesystem operations, web search (DuckDuckGo, no API key), URL content extraction, current time, and shell command execution — all with automatic error recovery and self-healing.
 - **Self-healing** — After the LLM writes an app, Reside automatically runs it and injects any runtime errors back into the conversation for the LLM to fix, with up to 3 fix attempts.
 - **Per-app git repos** — Each project directory gets its own independent git repository with auto-commit after every tool execution.
@@ -270,9 +270,12 @@ node src/index.js --list-apps
 
 Reside is model-agnostic and works with any Ollama model. It has been tested with:
 
-- **qwen2.5-coder:7b** — Uses markdown-fenced JSON format (` ```json {...} ``` `)
-- **qwen3.5:latest** — Uses raw JSON format (no fences, includes `thinking` field)
-- **granite4.1:8b** — Uses raw JSON format (no fences, no thinking field)
+| Model | Tool Call Format | Notes |
+|-------|-----------------|-------|
+| **qwen2.5-coder:7b** | Markdown-fenced JSON (` ```json {...} ``` `) | Well-tested, reliable |
+| **qwen3.5:latest** | Raw JSON (no fences, includes `thinking` field) | Well-tested, reliable |
+| **granite4.1:8b** | Raw JSON (no fences, no thinking field) | Well-tested, reliable |
+| **deepseek-coder-v2:latest** | Unicode XML-like tags (`<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>`) with JSON arguments | Tested — uses `user` role workaround for tool results (DeepSeek does not support the `tool` role natively) |
 
 The parser automatically detects and handles all formats. To use a different model:
 
@@ -390,6 +393,6 @@ This guidance is embedded in the system prompt at [`src/config.js`](src/config.j
 
 ## Why Reside?
 
-Most agentic IDE plugins don't understand native JSON tool call formats from models like Qwen and Granite. They expect OpenAI-style `function_call` structures, but these models output tool calls as JSON objects embedded in the response text — either wrapped in markdown code fences (Qwen 2.5 Coder), as raw JSON with a `thinking` field (Qwen 3.5), or as plain raw JSON (Granite 4.1).
+Most agentic IDE plugins don't understand native JSON tool call formats from models like Qwen, Granite, and DeepSeek. They expect OpenAI-style `function_call` structures, but these models output tool calls as JSON objects embedded in the response text — either wrapped in markdown code fences (Qwen 2.5 Coder), as raw JSON with a `thinking` field (Qwen 3.5), as plain raw JSON (Granite 4.1), or as Unicode XML-like tags with JSON arguments (DeepSeek Coder V2).
 
 Reside was built specifically to handle these formats correctly, with zero dependencies and maximum efficiency.
