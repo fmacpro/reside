@@ -21,7 +21,7 @@ You ──> reside ──> Ollama (qwen2.5-coder / qwen3.5 / granite4.1)
             │
             └──> Workdir/
                     ├── my-app/        (git repo)
-                    │   ├── index.js
+                    │   ├── index.html
                     │   └── style.css
                     ├── todo-app/      (git repo)
                     │   └── app.js
@@ -283,65 +283,7 @@ The parser automatically detects and handles all formats. To use a different mod
 node src/index.js --model llama3.2:latest "Your task here"
 ```
 
-## Project Structure
-
-```
-reside/
-├── package.json              # Project manifest (ESM, puppeteer deps)
-├── README.md                 # This file
-├── src/
-│   ├── index.js              # CLI entry point with argument parsing
-│   ├── config.js             # Configuration system (file + env vars)
-│   ├── ollama.js             # Native Node.js HTTP Ollama API client
-│   ├── parser.js             # Qwen tool call parser (2.5 + 3.5 + granite formats)
-│   ├── agent/                # Agent loop orchestrator
-│   │   ├── index.js          # Main agent loop
-│   │   ├── prompts/
-│   │   │   └── systemPrompt.js  # System prompt template
-│   │   └── utils/
-│   │       ├── briefToolStatus.js  # Compact tool status formatting
-│   │       └── renderText.js      # Text rendering utilities
-│   ├── tools/                # Tool execution engine (13 tools)
-│   │   ├── index.js          # Tool registry and dispatch
-│   │   ├── createDirectory.js
-│   │   ├── deleteFile.js
-│   │   ├── editFile.js
-│   │   ├── executeCommand.js
-│   │   ├── fetchUrl.js       # URL fetching (thin wrapper)
-│   │   ├── finish.js
-│   │   ├── getCurrentTime.js
-│   │   ├── listFiles.js
-│   │   ├── readFile.js
-│   │   ├── searchFiles.js
-│   │   ├── searchNpm.js
-│   │   ├── searchWeb.js      # Puppeteer-based DuckDuckGo search
-│   │   ├── testApp.js        # App testing with src/ entry point support
-│   │   ├── writeFile.js
-│   │   └── utils/
-│   │       ├── ensureDir.js
-│   │       ├── extractAppName.js
-│   │       ├── fetchUrl.js   # URL fetching and article content extraction (zero deps)
-│   │       ├── findBestMatch.js
-│   │       ├── resolvePath.js
-│   │       ├── search.js     # Puppeteer-based DuckDuckGo search engine
-│   │       ├── stringRepair.js
-│   │       ├── toolDefinitions.js
-│   │       └── workspace.js  # Workdir manager with per-app git repos
-├── test/
-│   ├── agent.test.js         # Agent loop tests
-│   ├── config.test.js        # Config system tests
-│   ├── fetchUrl.test.js      # URL fetching tests (local test server)
-│   ├── integration.test.js   # End-to-end LLM simulation tests
-│   ├── parser.test.js        # JSON tool call parser tests
-│   ├── tools.test.js         # Tool execution engine tests
-│   ├── workspace.test.js     # Workspace manager tests
-│   ├── live_model_test.mjs   # Live CLI prompt tests against Ollama models
-│   ├── test-server.js        # Local HTTP test server for fetch tests
-│   └── fixtures/             # HTML test pages for local server
-└── workdir/                  # App/project directories (each with own git)
-```
-
-## Architecture
+## Project Architecture
 
 ```
 src/index.js          CLI argument parsing, routes to single-run or chat mode
