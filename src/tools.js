@@ -763,32 +763,54 @@ Do NOT write everything into a single file. Split the functionality into separat
             fixedContent = fixTemplate(fixedContent);
           } while (fixedContent !== prev);
 
-          // Detect template literal syntax used inside regular strings (double or single quotes).
+          // Detect and AUTO-FIX template literal syntax used inside regular strings.
           // The LLM often writes `${variable}` inside double-quoted or single-quoted strings,
           // which prints the literal text "${variable}" instead of the variable value.
           // This is a silent bug — no runtime error, but the output is wrong.
+          //
           // We use splitIntoSegments to only check non-template-literal segments,
           // avoiding false positives when ${...} appears inside template literals with quotes
           // (e.g., `...${fn('arg')}...`).
+          //
+          // Auto-fix strategy: for each non-template-literal segment, find all occurrences
+          // of "${...}" or '${...}' and convert them to `...` (backtick template literals).
+          // This handles cases like:
+          //   "CPU Model: ${cpuData.model}"  →  `CPU Model: ${cpuData.model}`
+          //   'Memory: ${mem.total} GB'       →  `Memory: ${mem.total} GB`
+          //   "Temp: ${temp}°C, Humidity: ${humidity}%"  →  `Temp: ${temp}°C, Humidity: ${humidity}%`
           const segments = splitIntoSegments(fixedContent);
+          let hasTemplateLiteralBug = false;
+          let rebuilt = '';
           for (const seg of segments) {
-            if (seg.type === 'code') {
-              // Look for ${...} inside double-quoted or single-quoted strings.
-              // Since this is a non-template-literal segment, we can safely match
-              // "..." or '...' containing ${...} without worrying about template literals.
+            if (seg.type === 'template') {
+              rebuilt += seg.content; // Template literals are left untouched
+            } else {
+              // Check if this code segment has ${...} inside regular strings
               const templateLiteralInString = /(["'])(?:[^"']*?)\$\{[^}]+\}(?:[^"']*?)\1/;
               if (templateLiteralInString.test(seg.content)) {
-                return {
-                  success: false,
-                  error: `The file "${path}" contains \${variable} syntax inside regular strings (double or single quotes) instead of backtick template literals. In JavaScript, \${} interpolation only works inside backtick strings (template literals). To fix this, change ALL the surrounding quotes from " or ' to backticks (\`). For example:\n\n` +
-                    `  // WRONG:\n` +
-                    `  console.log("CPU Model: \${cpuData.model}");\n\n` +
-                    `  // RIGHT:\n` +
-                    `  console.log(\`CPU Model: \${cpuData.model}\`);\n\n` +
-                    `Use write_file() to rewrite the file with backtick template literals instead of regular strings. Do NOT use edit_file() — the file has not been written yet. Rewrite the ENTIRE file content using write_file() with all \${} expressions inside backtick strings (\`...\`).`,
-                };
+                hasTemplateLiteralBug = true;
+                // Auto-fix: replace "${...}" or '${...}' with `...`
+                // Strategy: find each string that contains ${...} and convert its quotes to backticks.
+                // We match "..." or '...' that contain ${...} and replace the surrounding quotes.
+                let fixed = seg.content;
+                // Match strings like "text ${var} more text" or 'text ${var} more text'
+                // and replace the outer quotes with backticks.
+                fixed = fixed.replace(/(["'])((?:[^"']*?)\$\{[^}]+\}(?:[^"']*?))\1/g, (_match, _quote, inner) => {
+                  return `\`${inner}\``;
+                });
+                rebuilt += fixed;
+              } else {
+                rebuilt += seg.content;
               }
             }
+          }
+          
+          if (hasTemplateLiteralBug) {
+            // Log the auto-fix for debugging
+            if (this.config.debugMode) {
+              console.log(`   ⚠️ Auto-fixed template literal bug in "${path}" — converted \${} inside regular strings to backtick template literals`);
+            }
+            fixedContent = rebuilt;
           }
         }
 
