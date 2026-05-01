@@ -1378,6 +1378,21 @@ export class Agent {
               `Do NOT create .cjs files — they require CommonJS syntax which is harder to work with.`,
           },
           {
+            pattern: /ERR_REQUIRE_ESM/i,
+            guidance: 'You used require() to load an ES module (e.g., node-fetch v3+). ES modules cannot be loaded with require().\n\n' +
+              `In Node.js v18+, the fetch() API is available GLOBALLY — you do NOT need to install or import node-fetch at all. Simply use fetch() directly without any import or require statement.\n\n` +
+              `  // WRONG — node-fetch v3+ is ESM-only:\n` +
+              `  const fetch = require('node-fetch');  // ❌ ERR_REQUIRE_ESM\n\n` +
+              `  // CORRECT — fetch is globally available, no import needed:\n` +
+              `  const response = await fetch("https://api.example.com");  // ✅ works globally\n\n` +
+              `Steps to fix:\n` +
+              `1. Uninstall node-fetch: execute_command({"command":"npm uninstall node-fetch","cwd":"<app-dir>"})\n` +
+              `2. Rewrite the source file to use global fetch() — remove the require("node-fetch") line entirely\n` +
+              `3. Do NOT edit package.json — the fix is in the source code, not package.json\n` +
+              `4. Do NOT create .cjs files as a workaround — just use global fetch() in the existing file\n\n` +
+              `Use read_file() to examine the source code, then use write_file() to rewrite it with global fetch() instead of require("node-fetch").`,
+          },
+          {
             pattern: /ENOENT/i,
             guidance: 'The application failed because a required file does not exist. This is often because you forgot to run "npm init -y" to create package.json. You MUST run execute_command({"command":"npm init -y","cwd":"<app-name>"}) to initialize the project before running the app. Do NOT retry the run command — initialize the project first.',
           },
@@ -1439,6 +1454,21 @@ export class Agent {
               `Use read_file() to examine the source code, find the incorrect import statement (e.g., import fetch from "node:http"), and use edit_file() to remove it. ` +
               `Just delete the import line entirely — fetch() is available globally without any import. ` +
               `Do NOT try to install a package to fix this — the fix is to remove the invalid import.`,
+          },
+          {
+            pattern: /require.*node-fetch|node-fetch.*require/i,
+            guidance: 'You used require("node-fetch") but node-fetch v3+ is ESM-only and cannot be loaded with require().\n\n' +
+              `In Node.js v18+, the fetch() API is available GLOBALLY — you do NOT need to install or import node-fetch at all. Simply use fetch() directly without any import or require statement.\n\n` +
+              `  // WRONG — node-fetch v3+ cannot be require()'d:\n` +
+              `  const fetch = require('node-fetch');  // ❌ ERR_REQUIRE_ESM\n\n` +
+              `  // CORRECT — fetch is globally available, no import needed:\n` +
+              `  const response = await fetch("https://wttr.in/London?format=j1");  // ✅ works globally\n\n` +
+              `Steps to fix:\n` +
+              `1. Uninstall node-fetch: execute_command({"command":"npm uninstall node-fetch","cwd":"<app-dir>"})\n` +
+              `2. Rewrite the source file to use global fetch() — remove the require("node-fetch") line entirely\n` +
+              `3. Do NOT edit package.json to remove "type": "module" — that is the wrong fix\n` +
+              `4. Do NOT create .cjs files as a workaround — just use global fetch() in the existing .js file\n\n` +
+              `Use read_file() to examine the source code, then use write_file() to rewrite it with global fetch() instead of require("node-fetch").`,
           },
         ];
 
