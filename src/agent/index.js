@@ -1371,6 +1371,22 @@ export class Agent {
               `  });\n\n` +
               `Use read_file() to examine the source code, identify where rl.close() is called, and use edit_file() to move the displayMenu() call before rl.close().`,
           },
+          {
+            pattern: /ERR_UNKNOWN_BUILTIN_MODULE/i,
+            guidance: 'The application tried to import from a built-in Node.js module that does not exist. The most common cause is importing from "node:http/fetch" or "node:https/fetch" — these paths do NOT exist in Node.js.\n\n' +
+              `In Node.js v18+, the fetch() API is available GLOBALLY — you do NOT need to import it at all. Simply use fetch() directly without any import statement.\n\n` +
+              `  // WRONG — these imports do NOT exist:\n` +
+              `  import fetch from "node:http/fetch";       // ❌ ERR_UNKNOWN_BUILTIN_MODULE\n` +
+              `  import { fetch } from "node:http/fetch";   // ❌ ERR_UNKNOWN_BUILTIN_MODULE\n` +
+              `  import fetch from "node:https/fetch";      // ❌ ERR_UNKNOWN_BUILTIN_MODULE\n\n` +
+              `  // CORRECT — fetch is globally available, no import needed:\n` +
+              `  const response = await fetch("https://api.example.com");  // ✅ works globally\n\n` +
+              `  // ALSO CORRECT — import from node:http for the http module itself:\n` +
+              `  import http from "node:http";  // ✅ valid — the http module exists\n\n` +
+              `Use read_file() to examine the source code, find the invalid import statement (e.g., import fetch from "node:http/fetch"), and use edit_file() to remove it. ` +
+              `Just delete the import line entirely — fetch() is available globally without any import. ` +
+              `Do NOT try to install a package to fix this — the fix is to remove the invalid import.`,
+          },
         ];
 
         const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
