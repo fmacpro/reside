@@ -1387,6 +1387,19 @@ export class Agent {
               `Just delete the import line entirely — fetch() is available globally without any import. ` +
               `Do NOT try to install a package to fix this — the fix is to remove the invalid import.`,
           },
+          {
+            pattern: /fetch is not a function/i,
+            guidance: 'The application tried to call fetch() but it is not a function. This usually happens because you imported fetch from "node:http" — the default export of "node:http" is the http MODULE object, not the fetch function.\n\n' +
+              `In Node.js v18+, the fetch() API is available GLOBALLY — you do NOT need to import it at all. Simply use fetch() directly without any import statement.\n\n` +
+              `  // WRONG — these imports do NOT provide a usable fetch function:\n` +
+              `  import fetch from "node:http";       // ❌ fetch is the http module object, not a function\n` +
+              `  import { fetch } from "node:http";   // ❌ node:http does not export fetch\n\n` +
+              `  // CORRECT — fetch is globally available, no import needed:\n` +
+              `  const response = await fetch("https://api.example.com");  // ✅ works globally\n\n` +
+              `Use read_file() to examine the source code, find the incorrect import statement (e.g., import fetch from "node:http"), and use edit_file() to remove it. ` +
+              `Just delete the import line entirely — fetch() is available globally without any import. ` +
+              `Do NOT try to install a package to fix this — the fix is to remove the invalid import.`,
+          },
         ];
 
         const matchedError = knownErrors.find(e => e.pattern.test(errMsg));

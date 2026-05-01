@@ -253,6 +253,7 @@ APP ARCHITECTURE — CONTROLLER PATTERN:
    For non-Express apps (CLI tools, simple scripts), still separate concerns:
    - Put the main logic in a controller/service file
    - Keep app.js as the thin entry point that parses args and calls the controller
+   - For CLI apps that take command-line arguments (e.g., "node app.js London"), use process.argv to parse arguments. Do NOT use readline.question() for CLI argument parsing — readline is for INTERACTIVE apps that prompt the user repeatedly. If the user asks for a CLI app that takes a city name as an argument, use: const city = process.argv[2]; — NOT readline.question().
 
 0. ESM vs COMMONJS — CRITICAL UNDERSTANDING:
    Running an ECMAScript Module (ESM) script in Node.js allows the use of modern import/export syntax rather than CommonJS require(). All new Node.js apps MUST use ESM by default. Here is how they differ:
