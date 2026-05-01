@@ -149,6 +149,26 @@ export function createExecuteCommandHandler(engine) {
         };
       }
 
+      // Detect packages that are globally available in Node.js 18+ and should NOT be installed.
+      // These are APIs that are built into the Node.js runtime (not as modules, but as globals).
+      const globallyAvailable = new Set([
+        'node-fetch', 'node:fetch',
+      ]);
+      const globallyAvailablePackages = packages.filter(p => globallyAvailable.has(p));
+      if (globallyAvailablePackages.length > 0) {
+        const globalPkgList = globallyAvailablePackages.map(p => `"${p}"`).join(', ');
+        return {
+          success: false,
+          error: `You are trying to install ${globalPkgList} via npm, but the fetch() API is available GLOBALLY in Node.js 18+ — you do NOT need to install or import it at all. Simply use fetch() directly without any import or require statement:\n\n` +
+            `  // CORRECT — fetch is globally available, no import needed:\n` +
+            `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+            `  const data = await response.json();\n\n` +
+            `Remove "${globallyAvailablePackages[0]}" from the install command. It is available globally in Node.js without any installation. ` +
+            `If you already installed it, uninstall it: execute_command({"command":"npm uninstall node-fetch","cwd":"<app-dir>"})`,
+          data: { exitCode: null, stdout: '', stderr: '' },
+        };
+      }
+
       // Track valid and invalid packages for multi-package installs
       const validPackages = [];
       const invalidPackages = [];

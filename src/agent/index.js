@@ -584,7 +584,9 @@ export class Agent {
    * @returns {Promise<string>} 'continue'
    */
   async _autoRunTestApp() {
-    const testResult = await this.toolEngine.execute('test_app', { args: '' });
+    // Pass a default argument ("London") so CLI apps that require command-line args
+    // (e.g., weather apps that take a city name) don't fail with "Usage" errors.
+    const testResult = await this.toolEngine.execute('test_app', { args: 'London' });
     const isInteractive = testResult.data?.interactive === true;
 
     if (testResult.success || isInteractive) {
@@ -593,7 +595,7 @@ export class Agent {
         role: 'tool',
         content: JSON.stringify({
           tool: 'test_app',
-          arguments: { args: '' },
+          arguments: { args: 'London' },
           result: 'success',
           output: testResult.output,
           data: testResult.data,
@@ -609,7 +611,7 @@ export class Agent {
         role: 'tool',
         content: JSON.stringify({
           tool: 'test_app',
-          arguments: { args: '' },
+          arguments: { args: 'London' },
           result: 'error',
           output: testResult.error,
           data: testResult.data,
@@ -1783,7 +1785,11 @@ export class Agent {
 
         if (appDir) {
           console.log(`   🔍 Self-healing (#${this._selfHealCount}/${this._maxSelfHealCount}): testing app "${appDir}"...`);
-          const testResult = await this.toolEngine.execute('test_app', { args: '' });
+          // Pass a default argument ("London") so CLI apps that require command-line args
+          // (e.g., weather apps that take a city name) don't fail with "Usage" errors.
+          // This prevents the self-healing loop where the model rewrites the same file
+          // thinking it's broken, when it actually works fine with proper arguments.
+          const testResult = await this.toolEngine.execute('test_app', { args: 'London' });
           const isInteractive = testResult.data?.interactive === true;
 
           if (testResult.success || isInteractive) {
@@ -1808,7 +1814,7 @@ export class Agent {
               role: 'tool',
               content: JSON.stringify({
                 tool: 'test_app',
-                arguments: { args: '' },
+                arguments: { args: 'London' },
                 result: 'error',
                 output: testResult.error,
                 data: testResult.data,
@@ -1869,7 +1875,7 @@ export class Agent {
           role: 'tool',
           content: JSON.stringify({
             tool: 'test_app',
-            arguments: { args: '' },
+            arguments: { args: 'London' },
             result: 'error',
             output: `Warning: The app failed to run after ${this._maxSelfHealCount} fix attempts. The app may have issues that need manual fixing. Please review the error above and fix the code manually.`,
           }),

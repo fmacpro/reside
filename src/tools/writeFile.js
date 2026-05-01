@@ -83,6 +83,38 @@ export function createWriteFileHandler(engine) {
       };
     }
 
+    // Detect placeholder API keys in the content — models often use APIs that require
+    // keys (like weatherapi.com) and leave placeholder values like "YOUR_API_KEY".
+    const apiKeyPatterns = [
+      /YOUR_API_KEY/i,
+      /YOUR_?API_?KEY/i,
+      /API_KEY_HERE/i,
+      /YOUR_KEY/i,
+      /api[_-]?key["']?\s*[:=]\s*["'](?:your|api_key|key_here|placeholder|change_me|enter_your|put_your|add_your)/i,
+      /apikey["']?\s*[:=]\s*["'](?:your|api_key|key_here|placeholder|change_me|enter_your|put_your|add_your)/i,
+      /key["']?\s*[:=]\s*["']YOUR_KEY_HERE["']/i,
+    ];
+    const hasPlaceholderApiKey = apiKeyPatterns.some(p => p.test(contentStr));
+    if (hasPlaceholderApiKey && /\.(js|mjs|cjs|ts|py|rb|go|rs|php)$/i.test(path)) {
+      return {
+        success: false,
+        error: `The file "${path}" contains a placeholder API key (e.g., "YOUR_API_KEY"). You are using an API that requires authentication, but you left a placeholder value that will not work.\n\n` +
+          `Instead, use a FREE API that does NOT require an API key. For weather data, use wttr.in:\n\n` +
+          `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+          `  const data = await response.json();\n` +
+          `  console.log(data.current_condition[0].temp_C);\n\n` +
+          `Other free APIs without keys:\n` +
+          `  • https://api.github.com — GitHub public API\n` +
+          `  • https://api.spacexdata.com — SpaceX data\n` +
+          `  • https://api.coindesk.com/v1/bpi/currentprice.json — Bitcoin price\n` +
+          `  • https://api.chucknorris.io — jokes\n` +
+          `  • https://api.adviceslip.com — advice\n` +
+          `  • https://dog.ceo/api/breeds/image/random — dog pictures\n` +
+          `  • https://api.open-meteo.com — weather (alternative to wttr.in)\n\n` +
+          `Rewrite the file using a free API that does not require any API key.`,
+      };
+    }
+
     // Detect monolithic entry point files that should be split into controllers/services.
     const entryPointNames = new Set([
       'app.js', 'index.js', 'server.js', 'main.js',
