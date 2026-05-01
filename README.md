@@ -275,7 +275,7 @@ Reside is model-agnostic and works with any Ollama model. It has been tested wit
 | **qwen2.5-coder:7b** | Markdown-fenced JSON (` ```json {...} ``` `) | Well-tested, reliable |
 | **qwen3.5:latest** | Raw JSON (no fences, includes `thinking` field) | Well-tested, reliable |
 | **granite4.1:8b** | Raw JSON (no fences, no thinking field) | Well-tested, reliable |
-| **deepseek-coder-v2:latest** | Unicode XML-like tags (`<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>`) with JSON arguments | Tested — uses `user` role workaround for tool results (DeepSeek does not support the `tool` role natively) |
+| **deepseek-coder-v2:latest** | Unicode XML-like tags (`<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>`) with JSON arguments | Tested and working |
 
 The parser automatically detects and handles all formats. To use a different model:
 
