@@ -1581,6 +1581,44 @@ export class Agent {
                 pattern: /ENOENT/i,
                 guidance: 'The application failed because a required file does not exist. This is often because you forgot to run "npm init -y" to create package.json. You MUST run execute_command({"command":"npm init -y","cwd":"<app-name>"}) to initialize the project before running the app. Do NOT retry the run command — initialize the project first.',
               },
+              {
+                // Identifier has already been declared — the LLM named controller functions the same
+                // as imported service functions. For example, the controller imports addTodo from
+                // the service AND defines export async function addTodo() — this causes a naming
+                // conflict because the import and the function declaration have the same name.
+                pattern: /Identifier\s+'[^']+'\s+has\s+already\s+been\s+declared/i,
+                guidance: 'A function or variable has been declared twice with the same name. This is usually because you imported a function from a service module AND defined a function with the same name in the controller. For example:\n\n' +
+                  `  // WRONG — import and function have the same name:\n` +
+                  `  import { addTodo } from '../services/todoService.js';\n` +
+                  `  export async function addTodo() { ... addTodo(text); ... }  // ← addTodo refers to itself, not the import!\n\n` +
+                  `  // CORRECT — rename the controller function to avoid the conflict:\n` +
+                  `  import { addTodo as addTodoService } from '../services/todoService.js';\n` +
+                  `  export async function addTodo() { ... addTodoService(text); ... }\n\n` +
+                  `OR restructure so the controller calls the service directly without redefining the same function name. ` +
+                  `Use read_file() to examine the source code, identify the duplicate declaration, and use edit_file() to fix it. ` +
+                  `Do NOT retry the run command — fix the code first.`,
+              },
+              {
+                // ERR_USE_AFTER_CLOSE — the LLM calls rl.close() but then tries to use
+                // the readline interface again (e.g., calling displayMenu() after rl.close()).
+                // This happens when the LLM puts the menu display function call AFTER the
+                // rl.close() call in the code flow.
+                pattern: /ERR_USE_AFTER_CLOSE|readline.*use after close/i,
+                guidance: 'The readline interface was closed (rl.close()) but the code is still trying to use it. This usually happens when you call rl.close() inside the rl.question() callback but then also call displayMenu() or another function that uses rl after the callback. To fix this:\n\n' +
+                  `  // WRONG — displayMenu() called after rl.close():\n` +
+                  `  rl.question('Choose an option: ', (answer) => {\n` +
+                  `    // ... handle answer ...\n` +
+                  `    rl.close();\n` +
+                  `  });\n` +
+                  `  displayMenu();  // ← called AFTER rl.close() — ERR_USE_AFTER_CLOSE!\n\n` +
+                  `  // CORRECT — move displayMenu() INSIDE the callback, before rl.close():\n` +
+                  `  rl.question('Choose an option: ', (answer) => {\n` +
+                  `    // ... handle answer ...\n` +
+                  `    displayMenu();  // ← called BEFORE rl.close()\n` +
+                  `    rl.close();\n` +
+                  `  });\n\n` +
+                  `Use read_file() to examine the source code, identify where rl.close() is called, and use edit_file() to move the displayMenu() call before rl.close().`,
+              },
             ];
 
             const matchedError = knownErrors.find(e => e.pattern.test(errMsg));
