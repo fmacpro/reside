@@ -83,6 +83,30 @@ export function createWriteFileHandler(engine) {
       };
     }
 
+    // Detect import/require of node-fetch in source code — fetch() is globally available
+    // in Node.js 18+ and does NOT need to be installed or imported.
+    const nodeFetchPatterns = [
+      /from\s+["']node-fetch["']/i,
+      /require\s*\(\s*["']node-fetch["']\s*\)/i,
+      /import\s+fetch\s+from\s+["']node:http\/fetch["']/i,
+      /import\s*\{[^}]*fetch[^}]*\}\s*from\s+["']node:http["']/i,
+    ];
+    const hasNodeFetchImport = nodeFetchPatterns.some(p => p.test(contentStr));
+    if (hasNodeFetchImport && /\.(js|mjs|cjs|ts)$/i.test(path)) {
+      return {
+        success: false,
+        error: `The file "${path}" imports or requires "node-fetch", but the fetch() API is available GLOBALLY in Node.js 18+ — you do NOT need to install or import it at all.\n\n` +
+          `  // WRONG — do NOT import node-fetch:\n` +
+          `  import fetch from "node-fetch";  // ❌ will fail — node-fetch v3+ is ESM-only and cannot be require()'d\n\n` +
+          `  // CORRECT — fetch is globally available, no import needed:\n` +
+          `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+          `  const data = await response.json();\n` +
+          `  console.log(data.current_condition[0].temp_C);\n\n` +
+          `Remove the "node-fetch" import/require line entirely. Just use fetch() directly — it is a global function in Node.js 18+, like console.log() or setTimeout().\n\n` +
+          `Also, do NOT try to install node-fetch via npm — the execute_command tool will block it. Just use the global fetch() function directly.`,
+      };
+    }
+
     // Detect placeholder API keys in the content — models often use APIs that require
     // keys (like weatherapi.com) and leave placeholder values like "YOUR_API_KEY".
     const apiKeyPatterns = [

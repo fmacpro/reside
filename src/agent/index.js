@@ -57,6 +57,10 @@ export class Agent {
     // Track whether the LLM has used any file-creation tools
     this._hasUsedFileCreationTools = false;
 
+    // Track files rejected by write_file (e.g., for node-fetch imports)
+    // so we can provide specific guidance when test_app fails with ERR_MODULE_NOT_FOUND
+    this._rejectedWriteFilePaths = new Set();
+
     // Track whether any CODE source files have been written
     this._hasWrittenCodeFile = false;
 
@@ -1061,9 +1065,31 @@ export class Agent {
           data: result.data,
         }),
       });
+
+      // Check if the error is about a missing file that was rejected by write_file
+      const errorMsg = result.error || '';
+      const filePathMatch = errorMsg.match(/Cannot find module\s+'([^']+)'/i);
+      const missingFilePath = filePathMatch ? filePathMatch[1] : '';
+      const wasRejectedByWriteFile = missingFilePath && [...this._rejectedWriteFilePaths].some(rejectedPath =>
+        missingFilePath.endsWith(rejectedPath) || rejectedPath.endsWith(missingFilePath)
+      );
+
+      let guidance;
+      if (wasRejectedByWriteFile) {
+        const fileName = missingFilePath.split('/').pop();
+        guidance = `You called test_app() but the file "${missingFilePath}" is missing because write_file() REJECTED it earlier (likely due to a node-fetch import or other issue). You MUST retry write_file() to create this file WITHOUT the problematic import. Use the global fetch() function directly — it is available in Node.js 18+ without any import or require statement.\n\n` +
+          `  // CORRECT — fetch is globally available, no import needed:\n` +
+          `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+          `  const data = await response.json();\n` +
+          `  console.log(data.current_condition[0].temp_C);\n\n` +
+          `Call write_file({"path":"${missingFilePath}","content":"..."}) with the complete source code that uses global fetch() instead of node-fetch. Do NOT call test_app() again until you have successfully written this file.`;
+      } else {
+        guidance = `You called test_app() but you did NOT modify any code since the last test. The app is still failing with the same error. You MUST use read_file() to examine the source code, identify the bug, and use edit_file() to fix it BEFORE calling test_app() again. Do NOT call test_app() again until you have made actual code changes.`;
+      }
+
       this.messages.push({
         role: 'system',
-        content: `You called test_app() but you did NOT modify any code since the last test. The app is still failing with the same error. You MUST use read_file() to examine the source code, identify the bug, and use edit_file() to fix it BEFORE calling test_app() again. Do NOT call test_app() again until you have made actual code changes.`,
+        content: guidance,
       });
       return 'break';
     }
@@ -1099,7 +1125,11 @@ export class Agent {
 
       this.messages.push({
         role: 'system',
-        content: `The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.\n\nError:\n${errorMsg}`,
+        content: `The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.\n\n` +
+          `If the error is "Cannot read properties of undefined" or "X is not a function" and your code calls an external API (like wttr.in, a REST API, etc.), the most likely cause is that you are using WRONG field names for the API response. Do NOT guess API field names — use fetch_url() to check the actual API response structure BEFORE fixing the code. For example:\n\n` +
+          `  fetch_url({"url":"https://wttr.in/London?format=j1"})\n\n` +
+          `Examine the response to find the correct field names (e.g., "current_condition" is an array, "temp_C" with capital C, "windspeedKmph" with lowercase 's'), then use edit_file() to fix the code with the correct field names.\n\n` +
+          `Error:\n${errorMsg}`,
       });
 
       return 'break';
@@ -1240,6 +1270,42 @@ export class Agent {
       }
     }
 
+    // After successful search_npm_packages with empty results, check if the query
+    // looks like a web API (e.g., "wttr.in", "openweathermap") and inject guidance
+    // to use HTTP fetch() instead of searching for npm packages.
+    if (tc.tool === 'search_npm_packages' && result.success) {
+      const packages = result.data?.packages || [];
+      const query = (tc.arguments?.query || '').toLowerCase();
+
+      if (packages.length === 0) {
+        // Web API patterns — queries that look like web APIs rather than npm packages
+        const webApiPatterns = [
+          /\.(in|com|org|net|io|dev|app|api|co|uk|io)\b/,  // contains a domain-like suffix
+          /\b(weather|wttr|openweather|weatherapi|weatherstack)\b/i,
+          /\b(newsapi|news-api|github-api|gitlab-api)\b/i,
+          /\b(reddit-api|twitter-api|discord-api|slack-api|telegram-api)\b/i,
+          /\b(spotify-api|youtube-api|google-api|stripe-api|sendgrid|twilio)\b/i,
+          /\b(api|rest|graphql|endpoint)\b.*\b(weather|news|github|gitlab|reddit|twitter|discord)\b/i,
+        ];
+        const isWebApiQuery = webApiPatterns.some(p => p.test(query));
+
+        if (isWebApiQuery) {
+          console.log(`   ⚠️ search_npm_packages("${query}") returned no results — query looks like a web API, not an npm package`);
+          this.messages.push({
+            role: 'system',
+            content: `The npm search for "${query}" returned no results because "${query}" is a web API (accessed via HTTP), NOT an npm package. Web APIs are accessed using HTTP requests, not installed via npm.\n\n` +
+              `Use Node.js built-in fetch() (available globally in Node.js 18+) to make HTTP requests to the API endpoint. For example:\n\n` +
+              `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+              `  const data = await response.json();\n` +
+              `  console.log(data.current_condition[0].temp_C);\n\n` +
+              `Do NOT search npm for web APIs — they are not packages. Just use fetch() to call the API endpoint directly via HTTP.\n\n` +
+              `If you need an HTTP client with better error handling, install "axios" instead: execute_command({"command":"npm install axios","cwd":"<app-name>"}).\n\n` +
+              `Do NOT search for "${query}" again — it does not exist on npm. Use fetch() or axios to access the API via HTTP.`,
+          });
+        }
+      }
+    }
+
     // Display brief status
     if (this.config.debugMode) {
       const outputPreview = result.output
@@ -1310,6 +1376,13 @@ export class Agent {
           `3. Keep "${filePath.split('/').pop()}" thin — only imports and the main execution flow (under ~50 lines)\n\n` +
           `Do NOT try to write the same large file again. Do NOT write a different file that also has too much code. Split the functionality into separate modules first, then write each module as a small file.`;
       } else {
+        // Track rejected write_file paths for node-fetch or other import issues
+        if (tc.tool === 'write_file') {
+          const filePath = tc.arguments?.path || tc.arguments?.file_path || '';
+          if (filePath) {
+            this._rejectedWriteFilePaths.add(filePath);
+          }
+        }
         guidance = `The ${tc.tool}() tool just failed with: "${result.error}". Do NOT continue calling more tools — stop and reassess. Check what went wrong (e.g., does the directory exist? was the file created properly?) and fix the issue before proceeding. If you're stuck, explain the problem to the user.`;
       }
 
@@ -1571,6 +1644,26 @@ export class Agent {
               `Do NOT try to install a package to fix this — the fix is to remove the invalid import.`,
           },
           {
+            pattern: /fetch failed|fetch.*failed|ECONNREFUSED|ENOTFOUND|getaddrinfo.*ENOTFOUND|request to .* failed/i,
+            guidance: 'The HTTP request failed because the API endpoint is unreachable. This usually means one of:\n\n' +
+              `1. The API URL is incorrect or the service no longer exists (e.g., Yahoo YQL was shut down)\n` +
+              `2. The API requires authentication (API key) that you didn't provide\n` +
+              `3. The API endpoint URL is malformed\n\n` +
+              `For weather data, use the FREE wttr.in API which does NOT require any API key:\n\n` +
+              `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+              `  const data = await response.json();\n` +
+              `  const temp = data.current_condition[0].temp_C;\n` +
+              `  const desc = data.current_condition[0].weatherDesc[0].value;\n` +
+              `  console.log(\`\${temp}°C, \${desc}\`);\n\n` +
+              `Other free APIs without keys:\n` +
+              `  • https://api.github.com — GitHub public API\n` +
+              `  • https://api.open-meteo.com — weather (alternative to wttr.in)\n` +
+              `  • https://api.coindesk.com/v1/bpi/currentprice.json — Bitcoin price\n` +
+              `  • https://dog.ceo/api/breeds/image/random — dog pictures\n\n` +
+              `Use read_file() to examine the source code, identify the broken API URL, and use edit_file() to replace it with a working one. ` +
+              `Do NOT retry the same failing URL — it will keep failing.`,
+          },
+          {
             pattern: /require.*node-fetch|node-fetch.*require/i,
             guidance: 'You used require("node-fetch") but node-fetch v3+ is ESM-only and cannot be loaded with require().\n\n' +
               `In Node.js v18+, the fetch() API is available GLOBALLY — you do NOT need to install or import node-fetch at all. Simply use fetch() directly without any import or require statement.\n\n` +
@@ -1824,9 +1917,26 @@ export class Agent {
             const attemptsLeft = this._maxSelfHealCount - this._selfHealCount;
             const errorMsg = testResult.error || '';
             const isMissingFile = /MODULE_NOT_FOUND|ENOENT|Cannot find module/i.test(errorMsg);
+            const isNodeFetchError = /node-fetch|ERR_REQUIRE_ESM|ERR_MODULE_NOT_FOUND.*node-fetch/i.test(errorMsg);
 
             let guidance;
-            if (isMissingFile) {
+            if (isNodeFetchError) {
+              guidance = `The app "${appDir}" failed because of a "node-fetch" issue. The fetch() API is available GLOBALLY in Node.js 18+ — you do NOT need to install or import node-fetch at all.\n\n` +
+                `  // WRONG — do NOT import node-fetch:\n` +
+                `  import fetch from "node-fetch";  // ❌ will fail — node-fetch v3+ is ESM-only\n` +
+                `  const fetch = require("node-fetch");  // ❌ ERR_REQUIRE_ESM\n\n` +
+                `  // CORRECT — fetch is globally available, no import needed:\n` +
+                `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+                `  const data = await response.json();\n` +
+                `  console.log(data.current_condition[0].temp_C);\n\n` +
+                `Steps to fix:\n` +
+                `1. Uninstall node-fetch: execute_command({"command":"npm uninstall node-fetch","cwd":"${appDir}"})\n` +
+                `2. Use read_file() to examine the source code and find the import/require("node-fetch") line\n` +
+                `3. Use edit_file() or write_file() to remove the node-fetch import/require line entirely\n` +
+                `4. Just use fetch() directly — it is a global function like console.log() or setTimeout()\n` +
+                `5. Call test_app() again to verify the fix works\n\n` +
+                `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+            } else if (isMissingFile) {
               const isMissingEntryPoint = /No entry point file found/i.test(errorMsg);
               if (isMissingEntryPoint) {
                 guidance = `The app "${appDir}" failed to run because no entry point file was found. You wrote controller/service modules but forgot to create the main entry point file (e.g., app.js, index.js).\n\n` +
@@ -1836,11 +1946,31 @@ export class Agent {
                   `After creating the file, call test_app() again to verify the fix works.\n\n` +
                   `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
               } else {
-                guidance = `The app "${appDir}" failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
-                  `You MUST check which files exist in the app directory using list_files() with path "${appDir}", then create the missing file using write_file(). ` +
-                  `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, then use write_file() to create the missing file. ` +
-                  `After creating the file, call test_app() again to verify the fix works.\n\n` +
-                  `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                // Check if the missing file was rejected by write_file
+                const filePathMatch = errorMsg.match(/Cannot find module\s+'([^']+)'/i);
+                const missingFilePath = filePathMatch ? filePathMatch[1] : '';
+                const wasRejectedByWriteFile = missingFilePath && [...this._rejectedWriteFilePaths].some(rejectedPath =>
+                  missingFilePath.endsWith(rejectedPath) || rejectedPath.endsWith(missingFilePath)
+                );
+
+                if (wasRejectedByWriteFile) {
+                  const fileName = missingFilePath.split('/').pop();
+                  guidance = `The app "${appDir}" failed because the file "${missingFilePath}" is missing. This file was REJECTED by write_file() earlier (likely due to a node-fetch import or other issue). You MUST retry write_file() to create this file WITHOUT the problematic import.\n\n` +
+                    `Use the global fetch() function directly — it is available in Node.js 18+ without any import or require statement:\n\n` +
+                    `  // CORRECT — fetch is globally available, no import needed:\n` +
+                    `  const response = await fetch("https://wttr.in/London?format=j1");\n` +
+                    `  const data = await response.json();\n` +
+                    `  console.log(data.current_condition[0].temp_C);\n\n` +
+                    `Call write_file({"path":"${missingFilePath}","content":"..."}) with the complete source code that uses global fetch() instead of node-fetch. ` +
+                    `Do NOT call finish() until this file is written successfully.\n\n` +
+                    `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                } else {
+                  guidance = `The app "${appDir}" failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
+                    `You MUST check which files exist in the app directory using list_files() with path "${appDir}", then create the missing file using write_file(). ` +
+                    `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, then use write_file() to create the missing file. ` +
+                    `After creating the file, call test_app() again to verify the fix works.\n\n` +
+                    `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                }
               }
             } else {
               guidance = `The app "${appDir}" failed to run. Here is the error:\n\n${testResult.error}\n\n` +
@@ -1851,12 +1981,22 @@ export class Agent {
                 `- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire(). Remember: all new Node.js apps use ESM (type: module) by default — require() does NOT work in ES modules.\n` +
                 `- If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports\n` +
                 `- If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install\n` +
-                `- If the error is a TypeError (e.g., "cannot read properties of undefined", "X is not a function"), the most likely cause is that you are using the wrong API for an installed package. Do NOT guess the API — use read_file() to inspect the actual package source code in node_modules/. For example:\n` +
+                `- If the error is a TypeError (e.g., "cannot read properties of undefined", "X is not a function") and your code calls an external API (like wttr.in, a REST API, etc.), the most likely cause is that you are using WRONG field names for the API response. Do NOT guess API field names — use fetch_url() to check the actual API response structure BEFORE fixing the code. For example:\n` +
+                `    fetch_url({"url":"https://wttr.in/London?format=j1"})\n` +
+                `  Examine the response to find the correct field names (e.g., "current_condition" is an array, "temp_C" with capital C, "windspeedKmph" with lowercase 's'), then use edit_file() to fix the code with the correct field names.\n` +
+                `- If the error is a TypeError (e.g., "cannot read properties of undefined", "X is not a function") and your code uses an installed npm package, the most likely cause is that you are using the wrong API for that package. Do NOT guess the API — use read_file() to inspect the actual package source code in node_modules/. For example:\n` +
                 `    * First, read the package's package.json to find the entry point: read_file({"path":"${appDir}/node_modules/<package>/package.json"})\n` +
                 `    * Look at the "main" field to find the actual entry point file (e.g., "lib/index.js", "dist/index.js")\n` +
                 `    * Then read that file to see the actual exported functions and their signatures\n` +
                 `    * Alternatively, read the package's README.md: read_file({"path":"${appDir}/node_modules/<package>/README.md"})\n` +
-                `  Find the correct function names and parameter signatures from the actual source code, then use edit_file() to fix the code.`;
+                `  Find the correct function names and parameter signatures from the actual source code, then use edit_file() to fix the code.\n` +
+                `- If the error says "fetch failed" or "request to ... failed" or "ENOTFOUND" or "ECONNREFUSED", the API endpoint URL is unreachable. This usually means the API service no longer exists (e.g., Yahoo YQL was shut down) or the URL is malformed. For weather data, use the FREE wttr.in API which does NOT require any API key:\n` +
+                `    const response = await fetch("https://wttr.in/London?format=j1");\n` +
+                `    const data = await response.json();\n` +
+                `    const temp = data.current_condition[0].temp_C;\n` +
+                `    const desc = data.current_condition[0].weatherDesc[0].value;\n` +
+                `    console.log(\`\${temp}°C, \${desc}\`);\n` +
+                `  Use read_file() to examine the source code, find the broken API URL, and use edit_file() to replace it with a working one.`;
             }
 
             this.messages.push({
