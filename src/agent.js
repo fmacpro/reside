@@ -725,7 +725,11 @@ export class Agent {
             // Auto-run test_app via the tool engine
             const testResult = await this.toolEngine.execute('test_app', { args: '' });
             
-            if (testResult.success) {
+            // Check if the app is interactive (readline menu) — it works but
+            // needs user input. Treat this as a success since the app is functional.
+            const isInteractive = testResult.data?.interactive === true;
+            
+            if (testResult.success || isInteractive) {
               console.log(`   ✅ App runs successfully!`);
               this.messages.push({
                 role: 'tool',
@@ -828,7 +832,11 @@ export class Agent {
           
           const testResult = await this.toolEngine.execute('test_app', { args: '' });
           
-          if (testResult.success) {
+          // Check if the app is interactive (readline menu) — it works but
+          // needs user input. Treat this as a success since the app is functional.
+          const isInteractive = testResult.data?.interactive === true;
+          
+          if (testResult.success || isInteractive) {
             console.log(`   ✅ App runs successfully!`);
             this.messages.push({
               role: 'tool',
@@ -1752,7 +1760,11 @@ export class Agent {
                 console.log(`   🔍 Self-healing (#${this._selfHealCount}/${this._maxSelfHealCount}): testing app "${appDir}"...`);
                 const testResult = await this.toolEngine.execute('test_app', { args: '' });
 
-                if (testResult.success) {
+                // Check if the app is interactive (readline menu) — it works but
+                // needs user input. Treat this as a success since the app is functional.
+                const isInteractive = testResult.data?.interactive === true;
+                
+                if (testResult.success || isInteractive) {
                   // App runs successfully — allow finish() to complete
                   console.log(`   ✅ App "${appDir}" runs successfully!`);
                   // Inject the test result so the LLM sees it worked

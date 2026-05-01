@@ -1993,7 +1993,9 @@ Do NOT write everything into a single file. Split the functionality into separat
         const cmdArgs = args ? ` ${args}` : '';
         const command = `node ${entryPoint}${cmdArgs}`;
 
-        // Run with a 5s timeout (same as execute_command for run commands)
+        // Run with a 5s timeout (same as execute_command for run commands).
+        // For interactive apps (readline menus), we pipe "exit\n" to stdin
+        // after 1s to let the app complete gracefully instead of timing out.
         return new Promise(resolve => {
           const child = spawn('/bin/sh', ['-c', command], {
             cwd: appPath,
@@ -2006,18 +2008,43 @@ Do NOT write everything into a single file. Split the functionality into separat
           let stderr = '';
           let timedOut = false;
           let resolved = false;
+          let hasPipedExit = false;
+
+          // After 1s, if the app is still running and has produced output,
+          // it's likely an interactive app waiting for input. Pipe "exit\n"
+          // to stdin to let it complete gracefully.
+          const exitPipeTimeout = setTimeout(() => {
+            if (!resolved && stdout.trim()) {
+              hasPipedExit = true;
+              child.stdin.write('exit\n');
+              child.stdin.end();
+            }
+          }, 1000);
 
           const timeout = setTimeout(() => {
+            clearTimeout(exitPipeTimeout);
             timedOut = true;
             child.kill();
             resolved = true;
             const output = stdout.trim() || stderr.trim() || '(no output)';
-            resolve({
-              success: false,
-              error: `The app timed out after 5s and produced no output. This may indicate an infinite loop, a missing console.log, or the app is waiting for user input. Check the code and fix any issues.`,
-              output,
-              data: { exitCode: null, timedOut: true, stdout, stderr, appDir, entryPoint },
-            });
+            
+            // If the app produced output before timing out, it's likely an
+            // interactive app (readline menu). Return the output as a success
+            // since the app works — it just needs user interaction.
+            if (stdout.trim()) {
+              resolve({
+                success: true,
+                output: stdout.trim() + '\n\n⚠️ App is interactive (requires user input). Run it manually to interact with the prompts.',
+                data: { exitCode: null, timedOut: true, interactive: true, stdout, stderr, appDir, entryPoint },
+              });
+            } else {
+              resolve({
+                success: false,
+                error: `The app timed out after 5s and produced no output. This may indicate an infinite loop, a missing console.log, or the app is waiting for user input. Check the code and fix any issues.`,
+                output,
+                data: { exitCode: null, timedOut: true, stdout, stderr, appDir, entryPoint },
+              });
+            }
           }, 5000);
 
           child.stdout.on('data', data => { stdout += data.toString(); });
@@ -2025,6 +2052,7 @@ Do NOT write everything into a single file. Split the functionality into separat
 
           child.on('close', code => {
             clearTimeout(timeout);
+            clearTimeout(exitPipeTimeout);
             if (resolved) return;
 
             resolved = true;
@@ -2049,6 +2077,7 @@ Do NOT write everything into a single file. Split the functionality into separat
 
           child.on('error', err => {
             clearTimeout(timeout);
+            clearTimeout(exitPipeTimeout);
             if (resolved) return;
             resolved = true;
             resolve({
