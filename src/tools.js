@@ -812,6 +812,74 @@ Do NOT write everything into a single file. Split the functionality into separat
             }
             fixedContent = rebuilt;
           }
+
+          // Detect: readFileSync/writeFileSync used without importing from node:fs.
+          // The LLM often uses these functions but forgets to import them from "node:fs".
+          // This is a silent bug — no runtime error at startup, but crashes when the
+          // function is actually called (e.g., when running a todo app subcommand).
+          // We detect this by checking if the content uses readFileSync or writeFileSync
+          // but does NOT have a corresponding import from "node:fs".
+          const fsFuncPattern = /\b(readFileSync|writeFileSync|existsSync|mkdirSync|readdirSync|unlinkSync|rmSync|appendFileSync|copyFileSync|renameSync|statSync|lstatSync|realpathSync|symlinkSync|truncateSync|chmodSync|chownSync|utimesSync|linkSync|mkdtempSync|opendirSync|readlinkSync|fstatSync|lchmodSync|lchownSync)\s*\(/;
+          const fsImportPattern = /import\s*\{[^}]*\b(readFileSync|writeFileSync|existsSync|mkdirSync|readdirSync|unlinkSync|rmSync|appendFileSync|copyFileSync|renameSync|statSync|lstatSync|realpathSync|symlinkSync|truncateSync|chmodSync|chownSync|utimesSync|linkSync|mkdtempSync|opendirSync|readlinkSync|fstatSync|lchmodSync|lchownSync)\b[^}]*\}\s*from\s*["']node:fs["']/;
+          const fsImportAllPattern = /import\s+\*\s+as\s+\w+\s+from\s+["']node:fs["']/;
+          const fsRequirePattern = /(?:const|let|var)\s+\w+\s*=\s*require\s*\(\s*["'](?:node:)?fs["']\s*\)/;
+          const fsDestructureRequirePattern = /(?:const|let|var)\s*\{[^}]*\b(readFileSync|writeFileSync|existsSync|mkdirSync|readdirSync|unlinkSync|rmSync|appendFileSync|copyFileSync|renameSync|statSync|lstatSync|realpathSync|symlinkSync|truncateSync|chmodSync|chownSync|utimesSync|linkSync|mkdtempSync|opendirSync|readlinkSync|fstatSync|lchmodSync|lchownSync)\b[^}]*\}\s*=\s*require\s*\(\s*["'](?:node:)?fs["']\s*\)/;
+          
+          // Only check JavaScript/TypeScript files
+          if (/\.(js|mjs|cjs|ts)$/i.test(path)) {
+            const hasFsFuncUsage = fsFuncPattern.test(fixedContent);
+            const hasFsImport = fsImportPattern.test(fixedContent) || fsImportAllPattern.test(fixedContent) || fsRequirePattern.test(fixedContent) || fsDestructureRequirePattern.test(fixedContent);
+            
+            if (hasFsFuncUsage && !hasFsImport) {
+              // Extract which functions are used
+              const usedFuncs = new Set();
+              let match;
+              const funcRegex = /\b(readFileSync|writeFileSync|existsSync|mkdirSync|readdirSync|unlinkSync|rmSync|appendFileSync|copyFileSync|renameSync|statSync|lstatSync|realpathSync|symlinkSync|truncateSync|chmodSync|chownSync|utimesSync|linkSync|mkdtempSync|opendirSync|readlinkSync|fstatSync|lchmodSync|lchownSync)\s*\(/g;
+              while ((match = funcRegex.exec(fixedContent)) !== null) {
+                usedFuncs.add(match[1]);
+              }
+              
+              const funcList = Array.from(usedFuncs).join(', ');
+              return {
+                success: false,
+                error: `The file "${path}" uses fs functions (${funcList}) but does not import them from "node:fs". In ES modules, you MUST import these functions explicitly:\n\n` +
+                  `  import { ${funcList} } from "node:fs";\n\n` +
+                  `Add the import statement at the top of the file and retry. Do NOT use require("fs") — that is CommonJS syntax and does NOT work in ES modules.`,
+              };
+            }
+          }
+
+          // Detect: __dirname used in ES modules (.js, .mjs files) without importing
+          // fileURLToPath and dirname from node:url and node:path.
+          // In ES modules ("type": "module"), __dirname is not available — it's a
+          // CommonJS global. The LLM often uses __dirname in .js files (which are ESM
+          // by default in this project) without the necessary import.meta.url workaround.
+          // This causes a runtime error: "ReferenceError: __dirname is not defined".
+          //
+          // We only check .js and .mjs files (ESM). .cjs files use CommonJS where
+          // __dirname IS available, so we skip those.
+          if (/\.(js|mjs)$/i.test(path)) {
+            const hasDirnameUsage = /\b__dirname\b/.test(fixedContent);
+            const hasFileURLToPathImport = /import\s*\{[^}]*\bfileURLToPath\b[^}]*\}\s*from\s*["']node:url["']/;
+            const hasDirnameImport = /import\s*\{[^}]*\bdirname\b[^}]*\}\s*from\s*["']node:path["']/;
+            const hasImportMetaUrl = /import\.meta\.url/.test(fixedContent);
+            
+            if (hasDirnameUsage && !(hasFileURLToPathImport.test(fixedContent) && hasDirnameImport.test(fixedContent) && hasImportMetaUrl)) {
+              return {
+                success: false,
+                error: `The file "${path}" uses __dirname but this is an ES module (.js file with "type": "module" in package.json). In ES modules, __dirname is NOT available — it is a CommonJS global.\n\n` +
+                  `To fix this, add the following imports at the top of the file:\n\n` +
+                  `  import { fileURLToPath } from "node:url";\n` +
+                  `  import { dirname } from "node:path";\n\n` +
+                  `Then replace __dirname with:\n\n` +
+                  `  const __filename = fileURLToPath(import.meta.url);\n` +
+                  `  const __dirname = dirname(__filename);\n\n` +
+                  `Or better, use path.resolve(fileURLToPath(import.meta.url), "relative/path") directly without defining __dirname.\n\n` +
+                  `Do NOT change the file extension to .cjs — .cjs files use CommonJS (require/module.exports), not ESM (import/export). ` +
+                  `The correct fix is to use import.meta.url in the existing .js file.`,
+              };
+            }
+          }
         }
 
         this._ensureDir(join(fullPath, '..'));
@@ -2012,7 +2080,13 @@ Do NOT write everything into a single file. Split the functionality into separat
         }
 
         if (!entryPoint) {
-          return { success: false, error: `No entry point file found in "${appDir}/". Expected one of: ${entryPoints.join(', ')}. Write the source code file first using write_file().` };
+          return {
+            success: false,
+            error: `No entry point file found in "${appDir}/". Expected one of: ${entryPoints.join(', ')}.\n\n` +
+              `You MUST create the entry point file using write_file(). The entry point is the main file that imports and calls the controllers/services. ` +
+              `For example: write_file({"path":"${appDir}/app.js","content":"..."}) with the complete source code that imports from your controller/service modules ` +
+              `and starts the application. Do NOT edit existing files — create the missing entry point file.`,
+          };
         }
 
         // For HTML entry points, we can't run them with node — they're static files.
@@ -2026,8 +2100,17 @@ Do NOT write everything into a single file. Split the functionality into separat
         }
 
         // Build the command: node <entrypoint> [args]
+        // If no args were provided, also test with --help to catch apps that use
+        // commander or similar CLI argument parsing. The initial test (no args)
+        // tests the help menu / startup. The --help test tests that the app
+        // doesn't crash when given a flag argument.
         const cmdArgs = args ? ` ${args}` : '';
         const command = `node ${entryPoint}${cmdArgs}`;
+        
+        // If no args were provided, we'll also test with --help to catch
+        // apps that use commander or similar CLI argument parsing.
+        // The --help flag should always work for any well-formed CLI app.
+        const helpCommand = args ? null : `node ${entryPoint} --help`;
 
         // Run with a 5s timeout (same as execute_command for run commands).
         // For interactive apps (readline menus), we pipe "exit\n" to stdin
@@ -2094,11 +2177,76 @@ Do NOT write everything into a single file. Split the functionality into separat
             resolved = true;
 
             if (code === 0) {
-              resolve({
-                success: true,
-                output: stdout.trim() || '(app ran successfully with no output)',
-                data: { exitCode: 0, stdout, stderr, appDir, entryPoint },
-              });
+              // If the initial test succeeded and we have a --help command to test,
+              // run the --help test to catch apps that use commander or similar CLI
+              // argument parsing. The --help flag should always work for any well-formed
+              // CLI app. If --help fails, it indicates the app has issues with argument
+              // parsing (e.g., missing imports, undefined functions in command handlers).
+              if (helpCommand && !resolved) {
+                // Run the --help test in a separate child process
+                const helpChild = spawn('/bin/sh', ['-c', helpCommand], {
+                  cwd: appPath,
+                  env: { ...process.env, PATH: process.env.PATH },
+                  stdio: ['pipe', 'pipe', 'pipe'],
+                  shell: false,
+                });
+                
+                let helpStdout = '';
+                let helpStderr = '';
+                let helpTimedOut = false;
+                let helpResolved = false;
+                
+                const helpTimeout = setTimeout(() => {
+                  helpTimedOut = true;
+                  helpChild.kill();
+                  helpResolved = true;
+                }, 5000);
+                
+                helpChild.stdout.on('data', data => { helpStdout += data.toString(); });
+                helpChild.stderr.on('data', data => { helpStderr += data.toString(); });
+                
+                helpChild.on('close', helpCode => {
+                  clearTimeout(helpTimeout);
+                  if (helpResolved) return;
+                  helpResolved = true;
+                  
+                  if (helpCode === 0) {
+                    // Both tests passed — return success with combined output
+                    resolve({
+                      success: true,
+                      output: (stdout.trim() || '(app ran successfully)') + '\n\n✅ --help test passed',
+                      data: { exitCode: 0, stdout, stderr, appDir, entryPoint, helpTestPassed: true },
+                    });
+                  } else {
+                    // --help test failed — return the error
+                    const helpError = helpStderr.trim() || helpStdout.trim() || `--help test exited with code ${helpCode}`;
+                    resolve({
+                      success: false,
+                      error: `The app ran without arguments but FAILED with --help flag:\n\n${helpError}\n\nThis usually means the app uses commander or similar CLI argument parsing but has a bug in the command setup (e.g., missing imports, undefined functions in command handlers). Fix the code and retry.`,
+                      output: helpError,
+                      data: { exitCode: helpCode, stdout: helpStdout, stderr: helpStderr, appDir, entryPoint, helpTestFailed: true },
+                    });
+                  }
+                });
+                
+                helpChild.on('error', () => {
+                  clearTimeout(helpTimeout);
+                  if (helpResolved) return;
+                  helpResolved = true;
+                  // If --help test fails to start, still return the initial test as success
+                  resolve({
+                    success: true,
+                    output: (stdout.trim() || '(app ran successfully)') + '\n\n⚠️ --help test could not be started',
+                    data: { exitCode: 0, stdout, stderr, appDir, entryPoint },
+                  });
+                });
+              } else {
+                resolve({
+                  success: true,
+                  output: stdout.trim() || '(app ran successfully with no output)',
+                  data: { exitCode: 0, stdout, stderr, appDir, entryPoint },
+                });
+              }
             } else {
               // Extract the actual error message from stderr
               const errorMsg = stderr.trim() || stdout.trim() || `App exited with code ${code}`;

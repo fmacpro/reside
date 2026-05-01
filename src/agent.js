@@ -766,10 +766,22 @@ export class Agent {
               
               let guidance;
               if (isMissingFile) {
-                guidance = `The app failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
-                  `You MUST check which files exist using list_files(), then create the missing file using write_file(). ` +
-                  `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, ` +
-                  `then use write_file() to create the missing file. After creating the file, call test_app() again to verify.`;
+                // Check if the error is specifically about a missing entry point file
+                // (e.g., "No entry point file found in ..."). The LLM often writes
+                // controllers/services but forgets to create the entry point (app.js).
+                const isMissingEntryPoint = /No entry point file found/i.test(errorMsg);
+                if (isMissingEntryPoint) {
+                  guidance = `The app failed to run because no entry point file was found. You wrote controller/service modules but forgot to create the main entry point file (e.g., app.js, index.js).\n\n` +
+                    `You MUST create the entry point file using write_file(). The entry point is the main file that imports and calls the controllers/services. ` +
+                    `For example: write_file({"path":"<app-dir>/app.js","content":"..."}) with the complete source code that imports from your controller/service modules ` +
+                    `and starts the application. Do NOT edit existing files — create the missing entry point file. ` +
+                    `After creating the file, call test_app() again to verify.`;
+                } else {
+                  guidance = `The app failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
+                    `You MUST check which files exist using list_files(), then create the missing file using write_file(). ` +
+                    `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, ` +
+                    `then use write_file() to create the missing file. After creating the file, call test_app() again to verify.`;
+                }
               } else {
                 guidance = `The app failed to run. Here is the error:\n\n${testResult.error}\n\n` +
                   `You MUST fix this error. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. ` +
@@ -1939,11 +1951,24 @@ export class Agent {
                   
                   let guidance;
                   if (isMissingFile) {
-                    guidance = `The app "${appDir}" failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
-                      `You MUST check which files exist in the app directory using list_files() with path "${appDir}", then create the missing file using write_file(). ` +
-                      `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, then use write_file() to create the missing file. ` +
-                      `After creating the file, call test_app() again to verify the fix works.\n\n` +
-                      `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                    // Check if the error is specifically about a missing entry point file
+                    // (e.g., "No entry point file found in ..."). The LLM often writes
+                    // controllers/services but forgets to create the entry point (app.js).
+                    const isMissingEntryPoint = /No entry point file found/i.test(errorMsg);
+                    if (isMissingEntryPoint) {
+                      guidance = `The app "${appDir}" failed to run because no entry point file was found. You wrote controller/service modules but forgot to create the main entry point file (e.g., app.js, index.js).\n\n` +
+                        `You MUST create the entry point file using write_file(). The entry point is the main file that imports and calls the controllers/services. ` +
+                        `For example: write_file({"path":"${appDir}/app.js","content":"..."}) with the complete source code that imports from your controller/service modules ` +
+                        `and starts the application. Do NOT edit existing files — create the missing entry point file. ` +
+                        `After creating the file, call test_app() again to verify the fix works.\n\n` +
+                        `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                    } else {
+                      guidance = `The app "${appDir}" failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
+                        `You MUST check which files exist in the app directory using list_files() with path "${appDir}", then create the missing file using write_file(). ` +
+                        `Do NOT edit existing files — the missing file needs to be CREATED. Use list_files() first to see what exists, then use write_file() to create the missing file. ` +
+                        `After creating the file, call test_app() again to verify the fix works.\n\n` +
+                        `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
+                    }
                   } else {
                     guidance = `The app "${appDir}" failed to run. Here is the error:\n\n${testResult.error}\n\n` +
                       `You MUST fix this error before finishing. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. ` +
