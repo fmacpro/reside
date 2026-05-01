@@ -1433,10 +1433,27 @@ export class Agent {
               });
             } else {
               // Package-related failure (non-existent, incompatible, etc.)
-              this.messages.push({
-                role: 'system',
-                content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+              // Detect: LLM tried to install built-in Node.js modules (fs, path, os, etc.)
+              // These are built into Node.js and do NOT need to be installed via npm.
+              const builtInModules = ['fs', 'path', 'os', 'http', 'https', 'url', 'util', 'stream', 'buffer', 'crypto', 'events', 'child_process', 'assert', 'net', 'dns', 'dgram', 'readline', 'tls', 'zlib', 'querystring', 'string_decoder', 'timers', 'tty', 'punycode', 'vm', 'worker_threads', 'cluster', 'module', 'process', 'console', 'perf_hooks', 'async_hooks', 'diagnostics_channel'];
+              const installPkgMatch = cmd.match(/^npm\s+install\s+(.+)/);
+              const installPkg = installPkgMatch ? installPkgMatch[1].trim() : '';
+              const isBuiltIn = builtInModules.some(m => {
+                const pkgName = installPkg.split(/\s+/)[0]; // Get first package name
+                return pkgName === m || pkgName === `node:${m}`;
               });
+              
+              if (isBuiltIn) {
+                this.messages.push({
+                  role: 'system',
+                  content: `"${installPkg}" is a built-in Node.js module — it does NOT need to be installed via npm. It is already available in Node.js. Just use import statements directly: import { ${installPkg === 'fs' ? 'readFileSync, writeFileSync, existsSync, mkdirSync' : installPkg} } from "node:${installPkg}"; Do NOT try to install it. Just write the source code using the built-in module.`,
+                });
+              } else {
+                this.messages.push({
+                  role: 'system',
+                  content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+                });
+              }
             }
 
             // Break out of the tool loop — the LLM MUST address the failure before continuing.
@@ -1484,7 +1501,7 @@ export class Agent {
               },
               {
                 pattern: /__dirname is not defined in ES module scope/i,
-                guidance: 'The project uses ES modules ("type": "module" in package.json), which do NOT support __dirname. To fix this, use import.meta.url with fileURLToPath: import { fileURLToPath } from "node:url"; import { dirname } from "node:path"; const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename); Or better, use path.resolve(fileURLToPath(import.meta.url), "../data/todos.json") for file paths. Do NOT edit package.json to remove "type": "module" — that is the wrong fix.',
+                guidance: 'The project uses ES modules ("type": "module" in package.json), which do NOT support __dirname. To fix this, use import.meta.url with fileURLToPath: import { fileURLToPath } from "node:url"; import { dirname } from "node:path"; const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename); Or better, use path.resolve(fileURLToPath(import.meta.url), "../data/todos.json") for file paths. Do NOT edit package.json to remove "type": "module" — that is the wrong fix. Do NOT create a .cjs file as a workaround — .cjs files use CommonJS (require/module.exports), not ESM (import/export). If you create a .cjs file, you MUST use require() and module.exports, NOT import and export. The correct fix is to use import.meta.url in the existing .js file.',
               },
               {
                 pattern: /ERR_IMPORT_ATTRIBUTE_MISSING/i,
@@ -1507,6 +1524,18 @@ export class Agent {
                   `   - Examine the response to find the correct field names (e.g., "windspeedKmph" with lowercase 's', not "windSpeedKmph")\n` +
                   `   - Then use edit_file() to fix the code with the correct field names\n\n` +
                   `Find the correct function names, parameter signatures, or API field names from the actual source code or API response, then use edit_file() to fix the code.`,
+              },
+              {
+                // .cjs files with ESM syntax — the LLM creates a .cjs file but writes
+                // import/export syntax (ESM) instead of require/module.exports (CommonJS).
+                // .cjs files use CommonJS by definition — import/export will cause a SyntaxError.
+                pattern: /\.cjs.*SyntaxError|SyntaxError.*\.cjs|Unexpected token 'export'.*\.cjs/i,
+                guidance: 'You created a .cjs file but used import/export syntax (ESM). .cjs files use CommonJS (require/module.exports), NOT ESM (import/export). To fix this, either:\n' +
+                  `  1. Rename the file to .js (ESM) and use import/export syntax with import.meta.url instead of __dirname\n` +
+                  `  2. OR change the file to use require() and module.exports (CommonJS)\n\n` +
+                  `The recommended fix is option 1: use write_file() to rewrite the file as .js with import/export syntax. ` +
+                  `Use import.meta.url with fileURLToPath for file paths instead of __dirname. ` +
+                  `Do NOT create .cjs files — they require CommonJS syntax which is harder to work with.`,
               },
               {
                 // ENOENT errors — typically means a required file (like package.json) doesn't exist.
