@@ -67,6 +67,34 @@ export function createExecuteCommandHandler(engine) {
       }
     }
 
+    // Detect and fix path doubling: when the LLM includes the app directory prefix
+    // in the command (e.g., "node weather-cli/app.js" or "chmod +x weather-cli/app.js")
+    // AND the cwd is already set to that app directory, the path becomes doubled
+    // (e.g., workdir/weather-cli/weather-cli/app.js). Strip the app prefix from the
+    // command to avoid this.
+    if (effectiveCwd && !cwd) {
+      const appName = effectiveCwd.replace(/\/+$/, '');
+      const appPrefix = appName + '/';
+      // Escape regex special characters in the app name
+      const escapedName = appName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // Match the app name followed by '/' at the start of the command OR after a
+      // word boundary (e.g., after a space following "node" or "chmod +x").
+      // Also handle "./app-name/" prefix (e.g., "node ./weather-cli/app.js").
+      // Use a negative lookahead after the app name (before the /) to ensure we
+      // don't match partial app names (e.g., "my-app" should not match
+      // "my-application/").
+      const appPrefixPattern = new RegExp(`(?:^|\\b|\\./)${escapedName}(?![\\w-])/`);
+      if (appPrefixPattern.test(command)) {
+        const fixedCommand = command.replace(appPrefixPattern, '');
+        if (fixedCommand !== command) {
+          console.log(`   ⚠️ Detected path doubling in command — stripping app prefix "${appPrefix}"`);
+          console.log(`      Original: ${command}`);
+          console.log(`      Fixed:    ${fixedCommand}`);
+          command = fixedCommand;
+        }
+      }
+    }
+
     // Pre-execution check: detect web server / HTTP framework packages being installed
     const webFrameworkPackages = new Set([
       'express', 'http', 'https', 'koa', 'fastify', 'hapi', 'restify',
