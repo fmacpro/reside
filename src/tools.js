@@ -928,6 +928,20 @@ Do NOT write everything into a single file. Split the functionality into separat
         }
 
         const newContent = content.slice(0, idx) + fixedNewString + content.slice(sliceEnd);
+
+        // Detect no-op edits: if the new content is identical to the old content,
+        // the edit_file() call did not actually change anything. This happens when
+        // the LLM provides the same code that already exists in the file (e.g.,
+        // trying to "fix" a function by rewriting it with the same content).
+        // Instead of silently succeeding, return an error telling the LLM to use
+        // write_file() to rewrite the entire file with the corrected code.
+        if (newContent === content) {
+          return {
+            success: false,
+            error: `The edit_file() call did NOT change anything in ${effectivePath} — the new content is identical to the existing content. This usually means you provided the same code that already exists. Use write_file() to rewrite the ENTIRE file with the corrected code instead. First use read_file() to see the current content, then call write_file() with the complete corrected file content.`,
+          };
+        }
+
         writeFileSync(fullPath, newContent, 'utf-8');
 
         const startLine = content.slice(0, idx).split('\n').length;
