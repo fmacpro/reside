@@ -39,7 +39,7 @@ export class OllamaClient {
    * @param {number} [options.numCtx]
    * @returns {Promise<OllamaResponse>}
    */
-  chat(model, messages, options = {}) {
+  async chat(model, messages, options = {}) {
     const body = {
       model,
       messages,
@@ -54,7 +54,25 @@ export class OllamaClient {
     if (options.repeatPenalty !== undefined) body.options.repeat_penalty = options.repeatPenalty;
     if (options.numCtx !== undefined) body.options.num_ctx = options.numCtx;
 
-    return this._post('/api/chat', body);
+    const response = await this._post('/api/chat', body);
+
+    // Handle Qwen3.5 models that return content in a "thinking" field
+    // instead of the standard "content" field in the message.
+    // Qwen3.5 response format:
+    //   { "message": { "content": "", "thinking": "Thinking Process:\n\n1. ..." } }
+    // Standard format:
+    //   { "message": { "content": "Hello!" } }
+    if (response?.message) {
+      const msg = response.message;
+      // If content is empty/whitespace and thinking exists with content, use thinking
+      if ((!msg.content || !msg.content.trim()) && msg.thinking && msg.thinking.trim()) {
+        msg.content = msg.thinking;
+      }
+      // Also handle the case where content exists but thinking has additional context
+      // (don't overwrite content if it already has meaningful text)
+    }
+
+    return response;
   }
 
   /**
