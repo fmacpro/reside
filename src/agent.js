@@ -1530,6 +1530,30 @@ export class Agent {
                   `Option 2 is recommended because it avoids external dependencies.`,
               },
               {
+                // commander not installed — the LLM wrote code using commander
+                // but never installed it. The error is "Cannot find package 'commander'".
+                pattern: /Cannot find package 'commander'|commander.*ERR_MODULE_NOT_FOUND/i,
+                guidance: 'The "commander" package is not installed. You have two options:\n' +
+                  `  1. Install it: execute_command({"command":"npm install commander","cwd":"<app-name>"})\n` +
+                  `  2. Better: Use native Node.js process.argv to parse command-line arguments instead. ` +
+                  `Native process.argv is built into Node.js and does NOT need to be installed. ` +
+                  `For simple CLI apps, you can parse arguments manually:\n\n` +
+                  `  const args = process.argv.slice(2);\n` +
+                  `  const command = args[0];\n` +
+                  `  const value = args[1];\n\n` +
+                  `Option 2 is recommended because it avoids external dependencies. ` +
+                  `If you choose option 1, install commander first, then retry test_app().`,
+              },
+              {
+                // readFileSync/writeFileSync not imported — the LLM used fs functions
+                // without importing them. The error is "readFileSync is not defined".
+                pattern: /readFileSync is not defined|writeFileSync is not defined|readFileSync.*not defined|writeFileSync.*not defined/i,
+                guidance: 'You used readFileSync() or writeFileSync() without importing them from the fs module. In ES modules, you MUST import these functions explicitly:\n\n' +
+                  `  import { readFileSync, writeFileSync, existsSync } from "node:fs";\n\n` +
+                  `Do NOT use require("fs") — that is CommonJS syntax and does NOT work in ES modules. ` +
+                  `Use read_file() to examine the source code, identify the missing import, and use edit_file() to add it.`,
+              },
+              {
                 pattern: /MODULE_NOT_FOUND/i,
                 guidance: 'The source file does not exist. You forgot to write it! You MUST call write_file() NOW to create the source file BEFORE running it. Do NOT retry the run command — write the source file first using write_file(). Pass the file path (e.g., "app-name/app.js") and the complete source code as the content parameter.',
               },
