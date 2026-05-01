@@ -1518,6 +1518,18 @@ export class Agent {
                   `Do NOT guess API field names — always verify with fetch_url() first.`,
               },
               {
+                // readline-sync not installed — the LLM wrote code using readline-sync
+                // but never installed it. The error is "Cannot find package 'readline-sync'"
+                // which is different from "Cannot find module '/path/to/file.js'".
+                pattern: /Cannot find package 'readline-sync'|readline-sync.*ERR_MODULE_NOT_FOUND/i,
+                guidance: 'The "readline-sync" package is not installed. You have two options:\n' +
+                  `  1. Install it: execute_command({"command":"npm install readline-sync","cwd":"<app-name>"})\n` +
+                  `  2. Better: Use native Node.js readline module instead. Native readline is built into Node.js and does NOT need to be installed. ` +
+                  `Replace: import readlineSync from "readline-sync"; with: import readline from "readline"; ` +
+                  `Then use readline.createInterface() and rl.question() instead of readlineSync.questionInt().\n\n` +
+                  `Option 2 is recommended because it avoids external dependencies.`,
+              },
+              {
                 pattern: /MODULE_NOT_FOUND/i,
                 guidance: 'The source file does not exist. You forgot to write it! You MUST call write_file() NOW to create the source file BEFORE running it. Do NOT retry the run command — write the source file first using write_file(). Pass the file path (e.g., "app-name/app.js") and the complete source code as the content parameter.',
               },
