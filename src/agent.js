@@ -59,6 +59,11 @@ function _briefToolStatus(tool, output, data) {
   if (!output) return '(completed)';
 
   switch (tool) {
+    case 'search_npm_packages': {
+      const pkgCount = data?.count || data?.packages?.length || 0;
+      const label = pkgCount === 1 ? 'package' : 'packages';
+      return `Found ${pkgCount} ${label}`;
+    }
     case 'search_web': {
       // Use the data.results array length for accurate count (more reliable than parsing output text)
       let resultCount = 0;
@@ -690,11 +695,18 @@ export class Agent {
             console.log(`   ⚠️ LLM wrote code but did not test or finish — re-prompting to continue (#${this._singleToolCallRepromptCount}/${this._maxSingleToolCallReprompts})`);
           }
 
-          // If the LLM has written an entry point (e.g., app.js) but never tested,
-          // auto-run test_app() instead of just re-prompting with text. Some models
-          // (e.g., Qwen 3.5) write all the files but never call test_app() or finish().
-          // Auto-running test_app gives the LLM the test result so it can fix issues.
-          if (this._hasWrittenEntryPoint && this._singleToolCallRepromptCount > 0) {
+          // If the LLM has written code files (entry point or controllers/services)
+          // but never tested, auto-run test_app() instead of just re-prompting with
+          // text. Some models (e.g., Qwen 3.5) write all the files but never call
+          // test_app() or finish(). Auto-running test_app gives the LLM the test
+          // result so it can fix issues.
+          //
+          // We check BOTH _hasWrittenEntryPoint (for standard entry points like app.js)
+          // AND _hasWrittenCodeFile (for cases where monolithic file detection rejected
+          // the entry point and the LLM wrote controllers/services instead). In the
+          // latter case, the LLM may have written all necessary files but never tested.
+          const hasTestableCode = this._hasWrittenEntryPoint || this._hasWrittenCodeFile;
+          if (hasTestableCode && this._singleToolCallRepromptCount > 0) {
             // If the counter is already at the max, force-end instead of auto-running
             // test_app again. The LLM has been re-prompted enough times and is not
             // making progress (writing the same file repeatedly).
@@ -788,6 +800,68 @@ export class Agent {
           // Reset the flag so we don't re-prompt again on the next text-only response
           this._hadWriteWithoutTestOrFinish = false;
           continue;
+        }
+
+        // If the LLM wrote code files but never tested or finished, and the
+        // _hadWriteWithoutTestOrFinish check above didn't trigger (e.g., because
+        // _hasWrittenEntryPoint was false but _hasWrittenCodeFile was true, or
+        // the reprompt count was 0), auto-run test_app before ending the session.
+        // This catches cases where the LLM writes controllers/services (not an
+        // entry point) and then responds with text-only, ending the session
+        // without testing.
+        //
+        // IMPORTANT: Only trigger this when the session is about to end naturally
+        // (no interception, re-prompt, or guidance was injected). If the session
+        // was intercepted (e.g., finish() was intercepted, test_app was re-prompted,
+        // or runtime error guidance was injected), the LLM already has instructions
+        // on what to do next — running test_app again would interfere.
+        // We detect this by checking if the last system message contains guidance
+        // that tells the LLM what to do next (interception, re-prompt, or error).
+        const hasActiveGuidance = lastSystemMsg?.content?.includes('called finish() without writing') ||
+          lastSystemMsg?.content?.includes('did NOT modify any code since the last test') ||
+          lastSystemMsg?.content?.includes('The application code has a runtime error') ||
+          lastSystemMsg?.content?.includes('STOP responding with text') ||
+          lastSystemMsg?.content?.includes('You MUST call write_file() NOW') ||
+          lastSystemMsg?.content?.includes('You MUST fix this error');
+        if (this._hasWrittenCodeFile && !this._hasRunSelfHeal && !hasActiveGuidance) {
+          console.log('   ⚠️ LLM wrote code files but never tested — auto-running test_app() before session end...');
+          
+          const testResult = await this.toolEngine.execute('test_app', { args: '' });
+          
+          if (testResult.success) {
+            console.log(`   ✅ App runs successfully!`);
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: 'test_app',
+                arguments: { args: '' },
+                result: 'success',
+                output: testResult.output,
+                data: testResult.data,
+              }),
+            });
+          } else {
+            console.log(`   ❌ App failed: ${testResult.error}`);
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: 'test_app',
+                arguments: { args: '' },
+                result: 'error',
+                output: testResult.error,
+                data: testResult.data,
+              }),
+            });
+            // Inject guidance to fix the app
+            this.messages.push({
+              role: 'system',
+              content: `The app failed to run. Here is the error:\n\n${testResult.error}\n\n` +
+                `You MUST fix this error. Use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. ` +
+                `After fixing, call test_app() again to verify the fix works.`,
+            });
+            // Don't set finished = true — give the LLM a chance to fix
+            continue;
+          }
         }
 
         finished = true;
@@ -975,6 +1049,52 @@ export class Agent {
           this._hadTestOrFinishInCurrentIteration = true;
         }
 
+        // Detect: LLM was re-prompted to use edit_file() after reading a file, but instead
+        // called test_app, execute_command, search_files, or another non-editing tool.
+        // Intercept and re-prompt again — the LLM should fix the code, not test the broken
+        // app or search for more information.
+        //
+        // IMPORTANT: This check MUST run BEFORE the test_app retry detection below to
+        // prevent the LLM from calling test_app() instead of edit_file() after being told
+        // to fix the code. The test_app retry detection would otherwise catch it first and
+        // break out of the tool loop, preventing this re-prompt from running.
+        if (this._readFileRepromptCount > 0 && tc.tool !== 'edit_file' && tc.tool !== 'write_file' && tc.tool !== 'read_file') {
+          this._readFileRepromptCount++;
+          console.log(`   ⚠️ LLM called ${tc.tool}() instead of edit_file() after read_file re-prompt (#${this._readFileRepromptCount}) — re-prompting`);
+
+          if (this._readFileRepromptCount >= this._maxReadFileReprompts) {
+            console.log('   ⚠️ LLM repeatedly ignored edit_file() re-prompt — ending session.');
+            this.messages.push({
+              role: 'tool',
+              content: JSON.stringify({
+                tool: tc.tool,
+                arguments: tc.arguments,
+                result: 'error',
+                output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. The session is ending.`,
+              }),
+            });
+            finished = true;
+            break;
+          }
+
+          // Inject guidance telling the LLM to use edit_file() instead
+          this.messages.push({
+            role: 'tool',
+            content: JSON.stringify({
+              tool: tc.tool,
+              arguments: tc.arguments,
+              result: 'error',
+              output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. Do NOT test the app or run commands — use edit_file() to fix the code first.`,
+            }),
+          });
+          this.messages.push({
+            role: 'system',
+            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Pass the file path and the new code (with enough surrounding context for the tool to locate the right section). Do NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
+          });
+          // Skip remaining tool calls in this iteration so the LLM sees the guidance
+          break;
+        }
+
         // Detect: LLM called test_app() twice without any code changes in between.
         // This means the LLM is retrying a failing test without fixing the code.
         // Instead of force-ending the session, inject an error message telling the
@@ -1091,46 +1211,6 @@ export class Agent {
           this._readFileRepromptCount = 0;
         }
 
-        // Detect: LLM was re-prompted to use edit_file() after reading a file, but instead
-        // called execute_command (testing the app) or another non-editing tool. Intercept
-        // and re-prompt again — the LLM should fix the code, not test the broken app.
-        if (this._readFileRepromptCount > 0 && tc.tool !== 'edit_file' && tc.tool !== 'write_file' && tc.tool !== 'read_file') {
-          this._readFileRepromptCount++;
-          console.log(`   ⚠️ LLM called ${tc.tool}() instead of edit_file() after read_file re-prompt (#${this._readFileRepromptCount}) — re-prompting`);
-
-          if (this._readFileRepromptCount >= this._maxReadFileReprompts) {
-            console.log('   ⚠️ LLM repeatedly ignored edit_file() re-prompt — ending session.');
-            this.messages.push({
-              role: 'tool',
-              content: JSON.stringify({
-                tool: tc.tool,
-                arguments: tc.arguments,
-                result: 'error',
-                output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. The session is ending.`,
-              }),
-            });
-            finished = true;
-            break;
-          }
-
-          // Inject guidance telling the LLM to use edit_file() instead
-          this.messages.push({
-            role: 'tool',
-            content: JSON.stringify({
-              tool: tc.tool,
-              arguments: tc.arguments,
-              result: 'error',
-              output: `Error: You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. Do NOT test the app or run commands — use edit_file() to fix the code first.`,
-            }),
-          });
-          this.messages.push({
-            role: 'system',
-            content: `You were told to use edit_file() to fix "${this._lastReadFilePath}" but you called ${tc.tool}() instead. You MUST call edit_file() NOW to apply the fix. Do NOT test the app, do NOT run commands, do NOT search the web — just fix the code using edit_file(). Pass the file path and the new code (with enough surrounding context for the tool to locate the right section). Do NOT include "old_string" — it is NOT a valid parameter and will be ignored. The tool automatically finds the best match using diff-based matching. Just provide the new code with enough context.`,
-          });
-          // Skip remaining tool calls in this iteration so the LLM sees the guidance
-          break;
-        }
-
         if (result.success) {
           // Track whether any source files have been written in this session.
           // Used to detect when the LLM calls finish() without writing any code.
@@ -1177,9 +1257,36 @@ export class Agent {
             const cmd = tc.arguments?.command || '';
             const isInitOrInstall = /^npm\s+(init|install)/.test(cmd.trim());
             if (isInitOrInstall && !this._hasWrittenEntryPoint) {
+              // Extract package name from npm install command for API inspection guidance
+              const installMatch = cmd.match(/^npm\s+install\s+(.+)/);
+              const pkgName = installMatch ? installMatch[1].trim() : '';
+              
+              let guidance;
+              if (pkgName) {
+                // npm install — guide the LLM to inspect the package API before writing code
+                guidance = `Project initialized successfully. "${pkgName}" has been installed.\n\n` +
+                  `CRITICAL — Before writing code that uses "${pkgName}", you MUST inspect its actual API first. ` +
+                  `Do NOT rely on your training data for API signatures — they may be outdated or incorrect. ` +
+                  `First, read the package's package.json to find the entry point: ` +
+                  `read_file({"path":"<app-dir>/node_modules/${pkgName}/package.json"}). ` +
+                  `Look at the "main" field to find the actual entry point file (e.g., "lib/index.js", "dist/index.js", "build/index.js", "index.js"). ` +
+                  `Then read that file to see the actual exported functions and their signatures. ` +
+                  `Alternatively, read the package's README.md from node_modules/${pkgName}/README.md for documentation.\n\n` +
+                  `For example, after installing "systeminformation", first read node_modules/systeminformation/package.json ` +
+                  `to find the "main" field, then read that entry point file to see the actual exported functions ` +
+                  `(cpu, mem, graphics, etc.) and their return structures before writing code that calls them.\n\n` +
+                  `After inspecting the API, structure your app with controllers and write the source code files using write_file(). ` +
+                  `Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), ` +
+                  `controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. ` +
+                  `See the APP ARCHITECTURE section in the system prompt for the recommended structure.`;
+              } else {
+                // npm init — standard guidance
+                guidance = 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.';
+              }
+              
               this.messages.push({
                 role: 'system',
-                content: 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.',
+                content: guidance,
               });
             }
           }
@@ -1320,7 +1427,7 @@ export class Agent {
               // Package-related failure (non-existent, incompatible, etc.)
               this.messages.push({
                 role: 'system',
-                content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry by searching the web. Use search_web() to find the correct package name. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+                content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
               });
             }
 
@@ -1338,6 +1445,26 @@ export class Agent {
               {
                 pattern: /inquirer\.prompt is not a function/i,
                 guidance: 'The "inquirer" package v9+ is ESM-only and does not support require("inquirer").prompt in CommonJS. To fix this, either: (1) Use dynamic import: const { default: inquirer } = await import("inquirer"); then use inquirer.prompt(), OR (2) Install an older CJS-compatible version: npm install inquirer@8.2.6, OR (3) Set "type": "module" in package.json and use import statements instead of require(). Do NOT reinstall inquirer — the version is fine, the import syntax needs to change.',
+              },
+              {
+                pattern: /os\.[a-zA-Z]+ is not a function|os-utils/i,
+                guidance: 'The "os-utils" package has a different API than expected. The package provides os.freemem(), os.totalmem(), os.cpuUsage(), os.cpuCount() — NOT os.memUsed(), os.cpu(), etc. However, for system information apps (CPU, GPU, memory), you should use the "systeminformation" package instead. It is the most comprehensive and well-maintained npm package for system info. Uninstall os-utils and install systeminformation: execute_command({"command":"npm uninstall os-utils","cwd":"<app-name>"}) then execute_command({"command":"npm install systeminformation","cwd":"<app-name>"}). Then rewrite the source code to use systeminformation\'s API: import { cpu, cpuInfo, mem, graphics } from "systeminformation"; — cpu() returns currentLoad, mem() returns { total, available, used, free }, graphics() returns { controllers: [{ model, vram, vendor }] }. Use read_file() to check the actual API in node_modules/systeminformation/lib/index.js if unsure.',
+              },
+              {
+                // wttr.in API field name mismatches — the LLM often guesses wrong casing
+                // for API response fields. The wttr.in API returns fields like:
+                //   windspeedKmph (lowercase 's'), temp_C, humidity, weatherDesc, etc.
+                // The LLM often writes windSpeedKmph (uppercase 'S') which is undefined.
+                pattern: /wttr\.in|undefined.*wind|wind.*undefined/i,
+                guidance: 'The wttr.in API returns JSON with specific field names that may differ from what you guessed. Common mistakes include:\n' +
+                  `  - "windSpeedKmph" (wrong — should be "windspeedKmph" with lowercase 's')\n` +
+                  `  - "temp_C" (correct — temperature in Celsius)\n` +
+                  `  - "humidity" (correct — humidity value)\n` +
+                  `  - "weatherDesc" (correct — array of weather descriptions)\n\n` +
+                  `To fix this, use fetch_url() to check the actual API response structure BEFORE writing code. ` +
+                  `For example: fetch_url({"url":"https://wttr.in/London?format=j1"}) will return the full JSON response. ` +
+                  `Examine the response to find the correct field names, then use edit_file() to fix the code. ` +
+                  `Do NOT guess API field names — always verify with fetch_url() first.`,
               },
               {
                 pattern: /MODULE_NOT_FOUND/i,
@@ -1361,7 +1488,17 @@ export class Agent {
               },
               {
                 pattern: /^(TypeError|ReferenceError|SyntaxError|RangeError|URIError):/m,
-                guidance: 'The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.',
+                guidance: 'The application code has a runtime error. Do NOT retry the same command — it will fail again. Instead, use read_file() to examine the source code, identify the bug, and use edit_file() to fix it. Common issues include: accessing properties on undefined values, calling undefined functions, or incorrect API response handling.\n\nIMPORTANT: If the error is "X is not a function" or "cannot read properties of undefined", the most likely cause is one of:\n\n' +
+                  `1. You are using the wrong API for an installed npm package. Do NOT guess the API — use read_file() to inspect the actual package source code in node_modules/. For example:\n` +
+                  `   - First, read the package's package.json to find the entry point: read_file({"path":"<app-dir>/node_modules/<package>/package.json"})\n` +
+                  `   - Look at the "main" field to find the actual entry point file (e.g., "lib/index.js", "dist/index.js")\n` +
+                  `   - Then read that file to see the actual exported functions and their signatures\n` +
+                  `   - Alternatively, read the package's README.md: read_file({"path":"<app-dir>/node_modules/<package>/README.md"})\n` +
+                  `2. You are accessing properties on an external API response (e.g., wttr.in, REST API) with wrong field names. Do NOT guess API field names — use fetch_url() to check the actual API response structure BEFORE writing code. For example:\n` +
+                  `   - fetch_url({"url":"https://wttr.in/London?format=j1"}) will return the full JSON response\n` +
+                  `   - Examine the response to find the correct field names (e.g., "windspeedKmph" with lowercase 's', not "windSpeedKmph")\n` +
+                  `   - Then use edit_file() to fix the code with the correct field names\n\n` +
+                  `Find the correct function names, parameter signatures, or API field names from the actual source code or API response, then use edit_file() to fix the code.`,
               },
               {
                 // ENOENT errors — typically means a required file (like package.json) doesn't exist.
@@ -1675,7 +1812,12 @@ export class Agent {
                       `- If the error says "require is not defined in ES module scope", replace require() with import statements or use createRequire(). Remember: all new Node.js apps use ESM (type: module) by default — require() does NOT work in ES modules.\n` +
                       `- If the error says "ERR_IMPORT_ATTRIBUTE_MISSING", add "with { type: 'json' }" to JSON imports\n` +
                       `- If the error says "Cannot find module" or "MODULE_NOT_FOUND", check if you need to install a package with npm install\n` +
-                      `- If the error is a TypeError (e.g., "cannot read properties of undefined"), check the API response structure — the API may return data in a different format than expected`;
+                      `- If the error is a TypeError (e.g., "cannot read properties of undefined", "X is not a function"), the most likely cause is that you are using the wrong API for an installed package. Do NOT guess the API — use read_file() to inspect the actual package source code in node_modules/. For example:\n` +
+                      `    * First, read the package's package.json to find the entry point: read_file({"path":"${appDir}/node_modules/<package>/package.json"})\n` +
+                      `    * Look at the "main" field to find the actual entry point file (e.g., "lib/index.js", "dist/index.js")\n` +
+                      `    * Then read that file to see the actual exported functions and their signatures\n` +
+                      `    * Alternatively, read the package's README.md: read_file({"path":"${appDir}/node_modules/<package>/README.md"})\n` +
+                      `  Find the correct function names and parameter signatures from the actual source code, then use edit_file() to fix the code.`;
                   }
                   
                   this.messages.push({
@@ -1691,20 +1833,25 @@ export class Agent {
             }
 
             // If we've exhausted all self-healing attempts and the app still fails,
-            // force-end the session with an error message.
+            // allow finish() to proceed with a warning. The app may have issues but
+            // we don't block completion — the user can fix it manually.
             if (this._selfHealCount >= this._maxSelfHealCount) {
-              console.log(`   ⚠️ Self-healing exhausted after ${this._maxSelfHealCount} attempts — ending session.`);
-              // Inject a tool result with the error so the LLM sees it
+              console.log(`   ⚠️ Self-healing exhausted after ${this._maxSelfHealCount} attempts — allowing finish() with warning.`);
+              // Inject a tool result with the error so the LLM sees it, but
+              // still allow finish() to complete. The app may be broken but
+              // we don't block the user from continuing.
               this.messages.push({
                 role: 'tool',
                 content: JSON.stringify({
                   tool: 'test_app',
                   arguments: { args: '' },
                   result: 'error',
-                  output: `The app failed to run after ${this._maxSelfHealCount} fix attempts. The session is ending. Please review the error above and fix the code manually.`,
+                  output: `Warning: The app failed to run after ${this._maxSelfHealCount} fix attempts. The app may have issues that need manual fixing. Please review the error above and fix the code manually.`,
                 }),
               });
+              // Allow finish() to proceed — don't block completion
               finished = true;
+              console.log(`\n⚠️ ${result.output} (app may have issues)`);
               break;
             }
 

@@ -430,6 +430,10 @@ export class ToolEngine {
         desc: 'Delete a file or directory',
         params: ['path'],
       },
+      search_npm_packages: {
+        desc: 'Search the npm registry for packages matching a query. Returns a list of packages with name, description, version, and keywords. Use this INSTEAD of search_web() when you need to find npm packages — the npm registry has its own search that is more accurate and up-to-date than web search. Always use this tool before running npm install to verify a package exists and find the correct package name.',
+        params: ['query'],
+      },
       search_web: {
         desc: 'Search the web for information. Returns a list of results with titles, snippets, and URLs. Use this when you need current information, documentation, or answers not in your training data.',
         params: ['query'],
@@ -609,6 +613,13 @@ Then write the files:
   • write_file("${appDir}/controllers/menuController.js", ...) — menu display and option handling
   • write_file("${appDir}/app.js", ...) — thin entry point that imports and calls the controller
 
+CRITICAL — When splitting code into multiple files, you MUST ensure:
+  • Each module file exports ALL functions that other files need (use "export function" or "export const")
+  • The entry point file imports ALL required functions from each module (use "import { ... } from")
+  • Each file imports ALL Node.js built-in modules it uses (fs, path, os, etc.) — do NOT assume they are globally available
+  • Do NOT forget to import functions in the entry point that are defined in controller/service files
+  • After writing all files, use read_file() to verify the entry point has all necessary imports before calling test_app()
+
 Do NOT write everything into a single file. Split the functionality into separate modules.`,
             };
           }
@@ -751,6 +762,34 @@ Do NOT write everything into a single file. Split the functionality into separat
             // Apply fixTemplate on the whole content (it only matches broken template literals)
             fixedContent = fixTemplate(fixedContent);
           } while (fixedContent !== prev);
+
+          // Detect template literal syntax used inside regular strings (double or single quotes).
+          // The LLM often writes `${variable}` inside double-quoted or single-quoted strings,
+          // which prints the literal text "${variable}" instead of the variable value.
+          // This is a silent bug — no runtime error, but the output is wrong.
+          // We use splitIntoSegments to only check non-template-literal segments,
+          // avoiding false positives when ${...} appears inside template literals with quotes
+          // (e.g., `...${fn('arg')}...`).
+          const segments = splitIntoSegments(fixedContent);
+          for (const seg of segments) {
+            if (seg.type === 'code') {
+              // Look for ${...} inside double-quoted or single-quoted strings.
+              // Since this is a non-template-literal segment, we can safely match
+              // "..." or '...' containing ${...} without worrying about template literals.
+              const templateLiteralInString = /(["'])(?:[^"']*?)\$\{[^}]+\}(?:[^"']*?)\1/;
+              if (templateLiteralInString.test(seg.content)) {
+                return {
+                  success: false,
+                  error: `The file "${path}" contains \${variable} syntax inside regular strings (double or single quotes) instead of backtick template literals. In JavaScript, \${} interpolation only works inside backtick strings (template literals). To fix this, change ALL the surrounding quotes from " or ' to backticks (\`). For example:\n\n` +
+                    `  // WRONG:\n` +
+                    `  console.log("CPU Model: \${cpuData.model}");\n\n` +
+                    `  // RIGHT:\n` +
+                    `  console.log(\`CPU Model: \${cpuData.model}\`);\n\n` +
+                    `Use write_file() to rewrite the file with backtick template literals instead of regular strings. Do NOT use edit_file() — the file has not been written yet. Rewrite the ENTIRE file content using write_file() with all \${} expressions inside backtick strings (\`...\`).`,
+                };
+              }
+            }
+          }
         }
 
         this._ensureDir(join(fullPath, '..'));
@@ -1191,9 +1230,9 @@ Do NOT write everything into a single file. Split the functionality into separat
           let errorMsg = '';
           if (invalidPackages.length > 0) {
             if (invalidPackages.length === 1) {
-              errorMsg = `Package "${invalidPackages[0]}" does not exist on the npm registry. Use search_web() to find the correct package name before installing.`;
+              errorMsg = `Package "${invalidPackages[0]}" does not exist on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search.`;
             } else {
-              errorMsg = `Packages "${invalidPackages.join('", "')}" do not exist on the npm registry. Use search_web() to find the correct package names before installing.`;
+              errorMsg = `Packages "${invalidPackages.join('", "')}" do not exist on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search.`;
             }
           }
 
@@ -1619,6 +1658,90 @@ Do NOT write everything into a single file. Split the functionality into separat
           output: `Deleted ${path}`,
           data: { path, type: stat.isDirectory() ? 'directory' : 'file' },
         };
+      },
+
+      search_npm_packages: async ({ query }) => {
+        if (!query) return { success: false, error: 'Missing required argument: query' };
+
+        try {
+          // Run npm search with a timeout. The output format is:
+          // NAME | DESCRIPTION | AUTHOR | DATE | VERSION | KEYWORDS
+          const result = execSync(`npm search "${query}" --json 2>/dev/null || npm search "${query}" 2>/dev/null`, {
+            encoding: 'utf-8',
+            timeout: 10000,
+            maxBuffer: 1024 * 1024,
+          });
+
+          if (!result || !result.trim()) {
+            return {
+              success: true,
+              output: `No packages found matching "${query}". Try a different search term.`,
+              data: { query, packages: [] },
+            };
+          }
+
+          // Try JSON format first (npm 10+ supports --json)
+          let packages = [];
+          try {
+            const parsed = JSON.parse(result.trim());
+            if (Array.isArray(parsed)) {
+              packages = parsed.slice(0, 20).map(pkg => ({
+                name: pkg.name || '',
+                version: pkg.version || '',
+                description: pkg.description || '',
+                keywords: Array.isArray(pkg.keywords) ? pkg.keywords.join(', ') : (pkg.keywords || ''),
+                date: pkg.date || '',
+                author: typeof pkg.author === 'string' ? pkg.author : (pkg.author?.name || ''),
+              }));
+            }
+          } catch {
+            // Fallback: parse the table format
+            // Format: NAME │ DESCRIPTION │ AUTHOR │ DATE │ VERSION │ KEYWORDS
+            const lines = result.trim().split('\n').filter(l => l.trim() && !l.includes('───') && !l.includes('NAME │'));
+            for (const line of lines.slice(0, 20)) {
+              const parts = line.split('│').map(p => p.trim());
+              if (parts.length >= 5) {
+                packages.push({
+                  name: parts[0] || '',
+                  version: parts[4] || '',
+                  description: parts[1] || '',
+                  keywords: parts[5] || '',
+                  date: parts[3] || '',
+                  author: parts[2] || '',
+                });
+              }
+            }
+          }
+
+          if (packages.length === 0) {
+            return {
+              success: true,
+              output: `No packages found matching "${query}". Try a different search term.`,
+              data: { query, packages: [] },
+            };
+          }
+
+          // Format the output for the LLM
+          const output = packages.map((pkg, i) => {
+            let entry = `${i + 1}. **${pkg.name}** v${pkg.version}`;
+            if (pkg.description) entry += ` — ${pkg.description}`;
+            if (pkg.keywords) entry += `\n   Keywords: ${pkg.keywords}`;
+            if (pkg.date) entry += `\n   Updated: ${pkg.date}`;
+            return entry;
+          }).join('\n\n');
+
+          return {
+            success: true,
+            output: `Found ${packages.length} package(s) matching "${query}":\n\n${output}\n\nTo install a package, use: npm install <package-name> (with cwd set to your app directory).`,
+            data: { query, packages, count: packages.length },
+          };
+        } catch (err) {
+          // npm search may fail if the npm registry is unreachable or npm is not installed
+          return {
+            success: false,
+            error: `npm search failed: ${err.message}. You can also try fetch_url({"url":"https://www.npmjs.com/search?q=${encodeURIComponent(query)}"}) to search npmjs.com directly.`,
+          };
+        }
       },
 
       search_web: async ({ query }) => {

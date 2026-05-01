@@ -729,6 +729,65 @@ describe('ToolEngine', () => {
     });
   });
 
+  describe('search_npm_packages', () => {
+    it('fails for missing query argument', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_npm_packages', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('fails for empty query', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_npm_packages', { query: '' });
+      assert.equal(result.success, false);
+      assert.match(result.error, /Missing required argument/);
+      cleanup(dir);
+    });
+
+    it('returns search_npm_packages in tool names', () => {
+      const engine = new ToolEngine('/tmp');
+      const names = engine.getToolNames();
+      assert.ok(names.includes('search_npm_packages'));
+    });
+
+    it('includes search_npm_packages in tool descriptions', () => {
+      const engine = new ToolEngine('/tmp');
+      const desc = engine.getToolDescriptions();
+      assert.match(desc, /search_npm_packages/);
+      assert.match(desc, /Search the npm registry/);
+    });
+
+    it('searches for a real npm package', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_npm_packages', { query: 'readline-sync' });
+      // This may fail if npm is not installed or the registry is unreachable,
+      // but if it succeeds, it should return valid results
+      if (result.success) {
+        assert.match(result.output, /readline-sync/);
+        assert.ok(result.data.packages.length > 0);
+        assert.ok(result.data.count > 0);
+        // Verify package structure
+        const pkg = result.data.packages[0];
+        assert.ok(pkg.name);
+        assert.ok(pkg.version);
+      }
+      cleanup(dir);
+    });
+
+    it('returns empty results for non-existent package', async () => {
+      const { dir, engine } = createTestWorkspace();
+      const result = await engine.execute('search_npm_packages', { query: 'xyznonexistentpackage12345' });
+      // Should succeed with empty results (no error)
+      if (result.success) {
+        assert.equal(result.data.packages.length, 0);
+        assert.match(result.output, /No packages found/);
+      }
+      cleanup(dir);
+    });
+  });
+
   describe('search_web', () => {
     it('fails for missing query argument', async () => {
       const { dir, engine } = createTestWorkspace();
@@ -823,12 +882,13 @@ describe('ToolEngine', () => {
       assert.ok(names.includes('create_directory'));
       assert.ok(names.includes('execute_command'));
       assert.ok(names.includes('delete_file'));
+      assert.ok(names.includes('search_npm_packages'));
       assert.ok(names.includes('search_web'));
       assert.ok(names.includes('fetch_url'));
       assert.ok(names.includes('get_current_time'));
       assert.ok(names.includes('test_app'));
       assert.ok(names.includes('finish'));
-      assert.equal(names.length, 13);
+      assert.equal(names.length, 14);
     });
   });
 

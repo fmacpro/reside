@@ -1,6 +1,6 @@
 # Tools Reference
 
-Reside provides the LLM with 12 built-in tools for filesystem operations, web access, time queries, and shell command execution. All tools operate within a designated workspace directory (`workdir/`).
+Reside provides the LLM with 13 built-in tools for filesystem operations, web access, npm registry search, time queries, and shell command execution. All tools operate within a designated workspace directory (`workdir/`).
 
 ---
 
@@ -18,6 +18,7 @@ Reside provides the LLM with 12 built-in tools for filesystem operations, web ac
   - [`execute_command(command, cwd?)`](#execute_commandcommand-cwd)
   - [`test_app(args?, cwd?)`](#test_appargs-cwd)
 - [Web Tools](#web-tools)
+  - [`search_npm_packages(query)`](#search_npm_packagesquery)
   - [`search_web(query)`](#search_webquery)
   - [`fetch_url(url, useBrowser?)`](#fetch_urlurl-usebrowser)
 - [Utility Tools](#utility-tools)
@@ -297,6 +298,54 @@ Test the application by running it and checking for errors. Use this **after** w
 ---
 
 ## Web Tools
+
+### `search_npm_packages(query)`
+
+Search the npm registry for packages matching a query. Returns a list of packages with name, description, version, and keywords. Use this **instead** of `search_web()` when you need to find npm packages — the npm registry has its own search that is more accurate and up-to-date than web search.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Search query (package name or partial name) |
+
+**Behavior:**
+- Runs `npm search <query>` via the CLI with a 10-second timeout
+- Tries JSON output format first (`npm search --json`), falls back to parsing the table format
+- Returns up to 20 matching packages with name, version, description, keywords, and last update date
+- If `npm search` fails (e.g., npm not installed or registry unreachable), suggests using `fetch_url` to search npmjs.com directly
+
+**Returns:** Structured data with `query`, `packages` array, and `count`.
+
+**When to use:**
+- **Always** use this tool before running `npm install` to verify a package exists
+- Use this to find the correct package name when you're not sure of the exact name
+- Use this to discover alternative packages when a specific package doesn't exist
+- Do **NOT** use `search_web()` for npm package lookups — this tool queries the npm registry directly
+
+**Errors:**
+- `Missing required argument: query` — no query provided
+- `npm search failed: <message>` — npm CLI failed (suggests using `fetch_url` as fallback)
+
+**Example:**
+```
+{"tool": "search_npm_packages", "arguments": {"query": "readline-sync"}}
+```
+
+**Example output:**
+```
+Found 3 package(s) matching "readline-sync":
+
+1. **readline-sync** v1.4.10 — Synchronous Readline for interactively running to have a conversation with the user via a console(TTY).
+   Keywords: readline, synchronous, prompt, question, password, cli, tty, command, interactive
+   Updated: 2024-01-15
+
+2. **readline-sync2** v0.1.1 — Synchronous Readline for interactively running to have a conversation with the user via a console(TTY).
+   Keywords: readline, synchronous, line, command, tty, prompt
+   Updated: 2023-08-22
+```
+
+---
 
 ### `search_web(query)`
 
