@@ -87,16 +87,52 @@ export function fixSingle(str) {
 }
 
 /**
- * For template literals: only repair when the continuation starts with a backtick
- * (indicating a broken template literal, not a legitimate multi-line one).
- * Legitimate multi-line template literals (with actual newlines) should NOT be repaired.
+ * For template literals: repair broken template literals where a \n escape was
+ * converted to an actual newline by JSON parsing.
+ *
+ * Uses splitIntoSegments to identify template literal boundaries, then checks
+ * each template literal for the broken pattern: a newline where the content
+ * after the last newline is only whitespace followed by the closing backtick.
+ *
+ * Legitimate multi-line template literals (with actual newlines in the middle
+ * of content) are NOT repaired.
+ *
  * @param {string} str
  * @returns {string}
  */
 export function fixTemplate(str) {
-  return str.replace(/(`[^`\n]*?)\n(\s*`[^`\n]*)/g, (m, b, a) =>
-    a.trimStart().startsWith('`') ? b + '\\n' + a.trimStart() : m
-  );
+  const segments = splitIntoSegments(str);
+  let rebuilt = '';
+  for (const seg of segments) {
+    if (seg.type === 'template') {
+      // Check if this template literal has the broken pattern:
+      // content, newline, whitespace, closing backtick
+      // e.g., `Adding a fish...
+      //        `
+      const content = seg.content;
+      // Remove the opening and closing backticks
+      const inner = content.slice(1, -1);
+      if (inner.includes('\n')) {
+        // Find the last newline
+        const lastNewlineIdx = inner.lastIndexOf('\n');
+        const afterLastNewline = inner.slice(lastNewlineIdx + 1);
+        // If the content after the last newline is only whitespace,
+        // this is a broken template literal — repair all newlines
+        if (afterLastNewline.trim() === '') {
+          // Replace all newlines with \n
+          rebuilt += '`' + inner.replace(/\n\s*/g, '\\n') + '`';
+        } else {
+          // Legitimate multi-line template literal — leave untouched
+          rebuilt += seg.content;
+        }
+      } else {
+        rebuilt += seg.content;
+      }
+    } else {
+      rebuilt += seg.content;
+    }
+  }
+  return rebuilt;
 }
 
 /**
