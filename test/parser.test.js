@@ -84,6 +84,97 @@ describe('parseToolCalls', () => {
     assert.equal(result.toolCalls.length, 1);
     assert.equal(result.toolCalls[0].arguments.message, 'from fence');
   });
+  it('parses DeepSeek XML-like format with single tool call (no args)', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.deepEqual(result.toolCalls[0].arguments, {});
+  });
+
+  it('parses DeepSeek XML-like format with single tool call and args on same line', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>write_file\n<｜tool▁sep｜>path<｜tool▁sep｜>test-app/app.js\n<｜tool▁sep｜>content<｜tool▁sep｜>console.log("hello");\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'write_file');
+    assert.equal(result.toolCalls[0].arguments.path, 'test-app/app.js');
+    assert.equal(result.toolCalls[0].arguments.content, 'console.log("hello");');
+  });
+
+  it('parses DeepSeek XML-like format with multi-line argument value', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>write_file\n<｜tool▁sep｜>path\n<｜tool▁sep｜>test-app/app.js\n<｜tool▁sep｜>content\n<｜tool▁sep｜>const x = 1;\nconst y = 2;\nconsole.log(x + y);\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'write_file');
+    assert.equal(result.toolCalls[0].arguments.path, 'test-app/app.js');
+    assert.equal(result.toolCalls[0].arguments.content, 'const x = 1;\nconst y = 2;\nconsole.log(x + y);');
+  });
+
+  it('parses DeepSeek XML-like format with text before and after', () => {
+    const input = 'Let me search for that.\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n<｜tool▁sep｜>query<｜tool▁sep｜>current weather\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>\nI will use the results.';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.equal(result.toolCalls[0].arguments.query, 'current weather');
+    assert.match(result.text, /Let me search for that/);
+    assert.match(result.text, /I will use the results/);
+  });
+
+  it('parses DeepSeek XML-like format with multiple tool calls', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>create_directory\n<｜tool▁sep｜>path<｜tool▁sep｜>my-app\n<｜tool▁call▁end｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>write_file\n<｜tool▁sep｜>path<｜tool▁sep｜>my-app/app.js\n<｜tool▁sep｜>content<｜tool▁sep｜>console.log("hello");\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 2);
+    assert.equal(result.toolCalls[0].tool, 'create_directory');
+    assert.equal(result.toolCalls[0].arguments.path, 'my-app');
+    assert.equal(result.toolCalls[1].tool, 'write_file');
+    assert.equal(result.toolCalls[1].arguments.path, 'my-app/app.js');
+    assert.equal(result.toolCalls[1].arguments.content, 'console.log("hello");');
+  });
+
+  it('parses DeepSeek XML-like format with execute_command and cwd', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>execute_command\n<｜tool▁sep｜>command<｜tool▁sep｜>npm init -y\n<｜tool▁sep｜>cwd<｜tool▁sep｜>my-app\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'execute_command');
+    assert.equal(result.toolCalls[0].arguments.command, 'npm init -y');
+    assert.equal(result.toolCalls[0].arguments.cwd, 'my-app');
+  });
+
+  it('parses DeepSeek hybrid format: XML tags for tool name, JSON fence for args', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n```json\n{"query": "current population of the world"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.deepEqual(result.toolCalls[0].arguments, { query: 'current population of the world' });
+  });
+
+  it('parses DeepSeek hybrid format with text before', () => {
+    const input = 'Let me search for that.\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n```json\n{"query": "current population"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.equal(result.toolCalls[0].arguments.query, 'current population');
+    assert.match(result.text, /Let me search for that/);
+  });
+
+  it('parses DeepSeek hybrid format with multiple tool calls', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n```json\n{"query": "current population"}\n```<｜tool▁call▁end｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_current_time\n```json\n{"timezone": "UTC"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 2);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.equal(result.toolCalls[0].arguments.query, 'current population');
+    assert.equal(result.toolCalls[1].tool, 'get_current_time');
+    assert.equal(result.toolCalls[1].arguments.timezone, 'UTC');
+  });
+
+  it('parses DeepSeek hybrid format with no args (just tool name)', () => {
+    const input = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>';
+    const result = parseToolCalls(input);
+    assert.equal(result.toolCalls.length, 1);
+    assert.equal(result.toolCalls[0].tool, 'search_web');
+    assert.deepEqual(result.toolCalls[0].arguments, {});
+  });
+
   it('repairs template literal backtick strings in JSON (single line)', () => {
     // LLM often uses backticks instead of double quotes for string values
     const input = '```json\n{"tool": "write_file", "arguments": {"path": "test.txt", "content": `hello world`}}\n```';
@@ -162,5 +253,13 @@ describe('containsToolCalls', () => {
 
   it('returns false for empty string', () => {
     assert.equal(containsToolCalls(''), false);
+  });
+
+  it('returns true for DeepSeek XML-like format', () => {
+    assert.equal(containsToolCalls('<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>'), true);
+  });
+
+  it('returns true for DeepSeek format with text before', () => {
+    assert.equal(containsToolCalls('Let me search.\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_web\n<｜tool▁call▁end｜><｜tool▁calls▁end｜>'), true);
   });
 });

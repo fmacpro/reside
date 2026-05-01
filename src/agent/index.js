@@ -112,6 +112,7 @@ export class Agent {
     // Empty response tracking
     this._emptyResponseCount = 0;
     this._maxEmptyResponses = 3;
+
   }
 
   // =========================================================================
@@ -171,7 +172,10 @@ export class Agent {
       // --- Step 2: Handle truncated responses ---
       if (this._handleTruncatedResponse(response, content)) continue;
 
-      this.messages.push({ role: 'assistant', content });
+      // Build assistant message — Ollama does NOT support OpenAI-compatible tool_calls format
+      // All models use the same message format regardless of model
+      const assistantMsg = { role: 'assistant', content };
+      this.messages.push(assistantMsg);
 
       // --- Step 3: Handle text-only responses (no tool calls) ---
       if (toolCalls.length === 0) {
@@ -316,7 +320,43 @@ export class Agent {
       return this._handleEmptyResponseAfterGuidance('test_app failure', 'fix the code');
     }
 
-    if (!lastText) return 'continue';
+    if (!lastText && hasRuntimeErrorGuidance) {
+      return this._handleEmptyResponseAfterGuidance('runtime error', 'fix the code');
+    }
+
+    // Generic empty/whitespace-only response — model stalled after tool result
+    if (!lastText) {
+      this._emptyResponseCount++;
+      console.log(`   ⚠️ Empty/whitespace-only response — re-prompting (#${this._emptyResponseCount}/${this._maxEmptyResponses})`);
+
+      if (this._emptyResponseCount >= this._maxEmptyResponses) {
+        console.log('   ⚠️ LLM repeatedly responded with empty text — ending session.');
+        this.messages.push({
+          role: 'system',
+          content: 'You have repeatedly responded with empty text. The session is ending.',
+        });
+        return 'finished';
+      }
+
+      // Check if the last message was a tool result — model may have stalled after receiving it
+      const lastToolMsg = this.messages.slice().reverse().find(m => m.role === 'tool');
+      const lastAssistantMsg = this.messages.slice().reverse().find(m => m.role === 'assistant');
+      const hasRecentToolResult = lastToolMsg && lastAssistantMsg &&
+        this.messages.indexOf(lastToolMsg) > this.messages.indexOf(lastAssistantMsg);
+
+      if (hasRecentToolResult) {
+        this.messages.push({
+          role: 'system',
+          content: 'You received the result of your tool call above. Continue with your task — either call another tool or respond to the user with the result. Do NOT repeat the same tool call. If you already have the information you need, respond to the user directly.',
+        });
+      } else {
+        this.messages.push({
+          role: 'system',
+          content: 'Your previous response was empty. Please respond to the user\'s request. If you need to use a tool, call it now. If you have the information needed, respond directly.',
+        });
+      }
+      return 'continue';
+    }
 
     // Check 3: Placeholder text detection
     if (this._detectPlaceholderText(lastText)) {
@@ -1505,10 +1545,27 @@ export class Agent {
       toolResult.data = result.data;
     }
 
-    this.messages.push({
-      role: 'tool',
-      content: JSON.stringify(toolResult),
-    });
+    // Always use JSON-wrapped format for tool results — Ollama does NOT support
+    // OpenAI-compatible tool_call_id format. All models (DeepSeek, Qwen, Granite, etc.)
+    // receive the same structured JSON format.
+    //
+    // For DeepSeek models: DeepSeek does NOT support the 'tool' role natively.
+    // When it receives a 'tool' role message, it stalls because it doesn't know
+    // how to interpret it. As a workaround, we use a 'user' role message with
+    // explicit instructions for DeepSeek, and the standard 'tool' role for other models.
+    if (/^deepseek/i.test(this.config.model)) {
+      // DeepSeek: use 'user' role with explicit instruction to continue
+      this.messages.push({
+        role: 'user',
+        content: `[Tool Result]\n\nTool: ${tc.tool}\nArguments: ${JSON.stringify(cleanArgs)}\nResult: ${result.success ? 'success' : 'error'}\nOutput: ${resultContent}\n\nContinue with your task. If the tool succeeded, respond to the user with the result or call another tool. If it failed, try a different approach. Do NOT repeat the same tool call.`,
+      });
+    } else {
+      // Other models: use standard 'tool' role with JSON-wrapped content
+      this.messages.push({
+        role: 'tool',
+        content: JSON.stringify(toolResult),
+      });
+    }
 
     // Handle finish() interception
     if (tc.tool === 'finish') {

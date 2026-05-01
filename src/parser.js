@@ -1,5 +1,5 @@
 /**
- * Tool call parser for Qwen models.
+ * Tool call parser for Qwen and DeepSeek models.
  *
  * Handles multiple formats:
  *
@@ -15,6 +15,12 @@
  * Qwen 3.5:
  *   {"tool": "name", "arguments": {...}}
  *   (raw JSON, no markdown fences)
+ *
+ * DeepSeek (XML-like with Unicode delimiters):
+ *   <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>tool_name
+ *   <｜tool▁sep｜>arg_name
+ *   <｜tool▁sep｜>arg_value
+ *   <｜tool▁call▁end｜><｜tool▁calls▁end｜>
  *
  * Also handles mixed content where text and tool calls appear together.
  *
@@ -173,8 +179,200 @@ export function parseToolCalls(content) {
     if (remaining2) textParts.push(remaining2);
   }
 
+  // Strategy 3: DeepSeek XML-like format with Unicode delimiters
+  // Format: <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>tool_name
+  //         <｜tool▁sep｜>arg_name
+  //         <｜tool▁sep｜>arg_value
+  //         <｜tool▁call▁end｜><｜tool▁calls▁end｜>
+  //
+  // Also handles hybrid format where the tool name is in XML tags and
+  // arguments are in a JSON fence inside the block:
+  //   <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>tool_name
+  //   ```json
+  //   {"key": "value"}
+  //   ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+  if (result.toolCalls.length === 0) {
+    const deepseekCalls = parseDeepSeekToolCalls(content);
+    if (deepseekCalls.length > 0) {
+      result.toolCalls.push(...deepseekCalls);
+      // Extract text before/after the DeepSeek tags
+      const deepseekTagRegex = /<｜tool▁calls▁begin｜>[\s\S]*?<｜tool▁calls▁end｜>/g;
+      let lastIdx = 0;
+      const textParts2 = [];
+      let match;
+      while ((match = deepseekTagRegex.exec(content)) !== null) {
+        const beforeText = content.slice(lastIdx, match.index).trim();
+        if (beforeText) textParts2.push(beforeText);
+        lastIdx = match.index + match[0].length;
+      }
+      const remaining = content.slice(lastIdx).trim();
+      if (remaining) textParts2.push(remaining);
+      result.text = textParts2.join('\n').trim();
+      return result;
+    }
+  }
+
   result.text = textParts.join('\n').trim();
   return result;
+}
+
+/**
+ * Parse DeepSeek XML-like tool call format with Unicode delimiters.
+ *
+ * Format:
+ *   <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>tool_name
+ *   <｜tool▁sep｜>arg_name
+ *   <｜tool▁sep｜>arg_value
+ *   <｜tool▁call▁end｜><｜tool▁calls▁end｜>
+ *
+ * The Unicode characters used as delimiters:
+ *   ｜ = U+FF5C (Fullwidth Vertical Line)
+ *   ▁ = U+2581 (Lower One Eighth Block)
+ *
+ * @param {string} content - The raw response content
+ * @returns {ToolCall[]}
+ */
+function parseDeepSeekToolCalls(content) {
+  if (!content || typeof content !== 'string') return [];
+  if (!content.includes('<｜tool▁calls▁begin｜>')) return [];
+
+  const toolCalls = [];
+
+  // Regex to find each tool call block between <｜tool▁call▁begin｜> and <｜tool▁call▁end｜>
+  const toolCallRegex = /<｜tool▁call▁begin｜>([\s\S]*?)<｜tool▁call▁end｜>/g;
+  let match;
+
+  while ((match = toolCallRegex.exec(content)) !== null) {
+    const block = match[1].trim();
+
+    // Parse the block: first line should be "function<｜tool▁sep｜>tool_name"
+    // Subsequent lines are either:
+    //   - JSON fence with arguments: ```json\n{"key": "value"}\n```
+    //   - Key-value pairs separated by <｜tool▁sep｜>
+    const lines = block.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    if (lines.length === 0) continue;
+
+    // First line: function<｜tool▁sep｜>tool_name
+    const firstLine = lines[0];
+    const functionMatch = firstLine.match(/^function<｜tool▁sep｜>(.+)$/);
+    if (!functionMatch) continue;
+
+    const toolName = functionMatch[1].trim();
+    if (!toolName) continue;
+
+    // Check if the remaining block contains a JSON fence with arguments
+    // DeepSeek sometimes uses a hybrid format:
+    //   function<｜tool▁sep｜>tool_name
+    //   ```json
+    //   {"key": "value"}
+    //   ```
+    const remainingBlock = lines.slice(1).join('\n');
+    const jsonFenceMatch = remainingBlock.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
+    let args = {};
+
+    if (jsonFenceMatch) {
+      // Try to parse the JSON fence content as arguments
+      const jsonStr = jsonFenceMatch[1].trim();
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          args = parsed;
+        }
+      } catch {
+        // JSON parse failed — try repair
+        const repaired = tryParseJson(jsonStr);
+        if (repaired && typeof repaired === 'object' && !Array.isArray(repaired)) {
+          args = repaired;
+        }
+      }
+    }
+
+    // If no JSON fence found or it didn't yield args, fall back to <｜tool▁sep｜> key-value parsing
+    if (Object.keys(args).length === 0) {
+      // Remaining lines: key-value pairs in one of two formats:
+      // Format A: <｜tool▁sep｜>key<｜tool▁sep｜>value (key and value on same line)
+      // Format B: <｜tool▁sep｜>key\n<｜tool▁sep｜>value (key and value on separate lines, alternating)
+      // Format C: <｜tool▁sep｜>key\n<｜tool▁sep｜>value\nvalue_cont (multi-line value, continuation lines without <｜tool▁sep｜>)
+      let currentKey = null;
+      let currentValue = null;
+      let expectingValue = false;
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i];
+
+        // Skip lines that are part of a JSON fence
+        if (line.startsWith('```')) continue;
+
+        // Check if this line starts with <｜tool▁sep｜>
+        const sepMatch = line.match(/^<｜tool▁sep｜>(.+)$/);
+        if (sepMatch) {
+          const rest = sepMatch[1].trim();
+
+          if (expectingValue) {
+            // We're expecting a value for the current key
+            // Check if this line has a second <｜tool▁sep｜> (key<｜tool▁sep｜>value on same line)
+            const secondSepIdx = rest.indexOf('<｜tool▁sep｜>');
+            if (secondSepIdx >= 0) {
+              // This is key<｜tool▁sep｜>value on same line — save previous key and start new one
+              if (currentKey !== null && currentValue !== null) {
+                args[currentKey] = currentValue;
+              }
+              currentKey = rest.substring(0, secondSepIdx).trim();
+              currentValue = rest.substring(secondSepIdx + '<｜tool▁sep｜>'.length).trim();
+              expectingValue = false;
+            } else {
+              // This is the value for the current key (Format B: key and value on separate lines)
+              if (currentValue) currentValue += '\n';
+              currentValue += rest;
+              // After getting a value, we expect the next <｜tool▁sep｜> line to be a key
+              expectingValue = false;
+            }
+          } else {
+            // We're expecting a key
+            // If we have a pending key-value pair, save it
+            if (currentKey !== null && currentValue !== null) {
+              args[currentKey] = currentValue;
+            }
+
+            // Check if this line has a second <｜tool▁sep｜> (key<｜tool▁sep｜>value on same line)
+            const secondSepIdx = rest.indexOf('<｜tool▁sep｜>');
+            if (secondSepIdx >= 0) {
+              // key<｜tool▁sep｜>value on same line (Format A)
+              currentKey = rest.substring(0, secondSepIdx).trim();
+              currentValue = rest.substring(secondSepIdx + '<｜tool▁sep｜>'.length).trim();
+              expectingValue = false;
+            } else {
+              // Just a key, value follows on next line (Format B)
+              currentKey = rest;
+              currentValue = '';
+              expectingValue = true;
+            }
+          }
+        } else {
+          // Continuation of the current value (multi-line value without <｜tool▁sep｜> prefix)
+          if (currentKey !== null) {
+            if (currentValue) currentValue += '\n';
+            currentValue += line;
+          }
+        }
+      }
+
+      // Save the last key-value pair
+      if (currentKey !== null && currentValue !== null) {
+        args[currentKey] = currentValue;
+      }
+    }
+
+    if (Object.keys(args).length > 0 || toolName) {
+      toolCalls.push({
+        tool: toolName,
+        arguments: args,
+      });
+    }
+  }
+
+  return toolCalls;
 }
 
 /**
@@ -840,6 +1038,9 @@ export function containsToolCalls(content) {
 
   // Check for raw JSON with tool property
   if (/["']tool["']\s*:/s.test(content)) return true;
+
+  // Check for DeepSeek XML-like format with Unicode delimiters
+  if (content.includes('<｜tool▁calls▁begin｜>')) return true;
 
   return false;
 }
