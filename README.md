@@ -216,6 +216,7 @@ The LLM has access to 13 built-in tools. See the full [Tools Reference](docs/too
 | [`create_directory(path)`](docs/tools.md#create_directorypath)                  | Create a directory (and parents if needed); auto-initializes git for top-level app dirs                  |
 | [`execute_command(command, cwd?)`](docs/tools.md#execute_commandcommand-cwd)          | Run a shell command with timeout and auto-cwd                                                             |
 | [`delete_file(path)`](docs/tools.md#delete_filepath)                       | Delete a file or directory                                                                               |
+| [`search_npm_packages(query)`](docs/tools.md#search_npm_packagesquery)       | Search the npm registry for packages (use before `npm install` to verify package names)                  |
 | [`search_web(query)`](docs/tools.md#search_webquery)                       | Search the web for information (DuckDuckGo, no API key needed)                                           |
 | [`fetch_url(url, useBrowser?)`](docs/tools.md#fetch_urlurl-usebrowser)             | Fetch a URL and extract its main article content (strips nav, ads, boilerplate)                          |
 | [`get_current_time(format?)`](docs/tools.md#get_current_timeformat)               | Get the current system date/time in various formats                                                      |
