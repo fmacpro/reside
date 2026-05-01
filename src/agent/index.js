@@ -781,7 +781,30 @@ export class Agent {
     if (isTopLevel && !this._hasWrittenEntryPoint) {
       this.messages.push({
         role: 'system',
-        content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN structure your app with controllers and write source files using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code files first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };\n\nAPP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). You can place the entry point at the app root (e.g., app.js) or inside a src/ subdirectory (e.g., src/app.js) — both patterns are supported. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
+        content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN structure your app with controllers and write source files using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code files first.\n\n' +
+          '## CRITICAL — ES MODULE SYNTAX REQUIRED\n\n' +
+          'All new Node.js apps use ES modules ("type": "module" in package.json). The system automatically adds "type": "module" after npm init -y.\n\n' +
+          '✅ You MUST use import/export syntax:\n' +
+          '  import { readFileSync } from "node:fs";\n' +
+          '  import axios from "axios";\n' +
+          '  export function myFunction() { ... }\n\n' +
+          '❌ You MUST NOT use require() or module.exports:\n' +
+          '  const fs = require("fs");           // ❌ will crash — require is not defined in ES module scope\n' +
+          '  const axios = require("axios");     // ❌ will crash — require is not defined in ES module scope\n' +
+          '  module.exports = { ... };           // ❌ will crash — module.exports is not defined in ES module scope\n\n' +
+          '❌ Do NOT install or import node-fetch — fetch() is globally available in Node.js 18+:\n' +
+          '  const fetch = require("node-fetch");  // ❌ ERR_REQUIRE_ESM — node-fetch v3+ is ESM-only\n' +
+          '  Just use fetch() directly: const response = await fetch("https://api.example.com");\n\n' +
+          '✅ For JSON file imports, use the "with { type: \'json\' }" assertion:\n' +
+          '  import data from "./file.json" with { type: "json" };\n\n' +
+          '✅ For __dirname replacement in ESM:\n' +
+          '  import { fileURLToPath } from "node:url";\n' +
+          '  import { dirname } from "node:path";\n' +
+          '  const __filename = fileURLToPath(import.meta.url);\n' +
+          '  const __dirname = dirname(__filename);\n\n' +
+          'REMEMBER: Do NOT edit package.json to remove "type": "module" — that is NEVER the right fix. ' +
+          'If you get "require is not defined in ES module scope", fix the code to use import/export — do NOT change package.json.\n\n' +
+          'APP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). You can place the entry point at the app root (e.g., app.js) or inside a src/ subdirectory (e.g., src/app.js) — both patterns are supported. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
       });
     }
     return undefined;
@@ -1115,7 +1138,15 @@ export class Agent {
             `controllers, and services. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. ` +
             `See the APP ARCHITECTURE section in the system prompt for the recommended structure.`;
         } else {
-          guidance = 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js at the app root or src/app.js inside a src/ subdirectory — both patterns are supported), controllers, and services. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.';
+          guidance = 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js at the app root or src/app.js inside a src/ subdirectory — both patterns are supported), controllers, and services. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.\n\n' +
+            '## CRITICAL — ES MODULE SYNTAX REQUIRED\n\n' +
+            'The project has "type": "module" in package.json. You MUST use import/export syntax. Do NOT use require() or module.exports.\n\n' +
+            '✅ CORRECT: import { readFileSync } from "node:fs";\n' +
+            '✅ CORRECT: import axios from "axios";\n' +
+            '✅ CORRECT: export function myFunction() { ... }\n' +
+            '❌ WRONG: const fs = require("fs"); — will crash with "require is not defined in ES module scope"\n' +
+            '❌ WRONG: const fetch = require("node-fetch"); — node-fetch v3+ is ESM-only, use global fetch() instead\n\n' +
+            'Do NOT edit package.json to remove "type": "module" — that is NEVER the right fix. Fix the code to use import/export syntax instead.';
         }
 
         this.messages.push({
