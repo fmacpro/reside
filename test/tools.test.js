@@ -984,5 +984,74 @@ describe('ToolEngine', () => {
 
       cleanup(dir);
     });
+
+    it('finds entry point in src/ subdirectory (src/ pattern support)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app', 'src'), { recursive: true });
+      writeFileSync(join(dir, 'my-app', 'src', 'app.js'), 'console.log("Hello from src/");', 'utf-8');
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, true, 'test_app should find entry point in src/');
+      assert.match(result.output, /Hello from src\//);
+      assert.equal(result.data.entryPoint, 'app.js', 'entryPoint should be app.js');
+      assert.equal(result.data.appDir, 'my-app', 'appDir should be my-app');
+
+      cleanup(dir);
+    });
+
+    it('finds entry point in src/ subdirectory with index.js', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app', 'src'), { recursive: true });
+      writeFileSync(join(dir, 'my-app', 'src', 'index.js'), 'console.log("Index in src/");', 'utf-8');
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, true, 'test_app should find index.js in src/');
+      assert.match(result.output, /Index in src\//);
+
+      cleanup(dir);
+    });
+
+    it('prefers entry point at app root over src/ subdirectory (root takes priority)', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app', 'src'), { recursive: true });
+      writeFileSync(join(dir, 'my-app', 'app.js'), 'console.log("Root entry point");', 'utf-8');
+      writeFileSync(join(dir, 'my-app', 'src', 'app.js'), 'console.log("src/ entry point");', 'utf-8');
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, true, 'test_app should prefer root entry point');
+      assert.match(result.output, /Root entry point/);
+      assert.doesNotMatch(result.output, /src\/ entry point/);
+
+      cleanup(dir);
+    });
+
+    it('finds entry point in src/ with command-line args', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app', 'src'), { recursive: true });
+      writeFileSync(join(dir, 'my-app', 'src', 'app.js'), 'const args = process.argv.slice(2); console.log("Args:", args.join(","));', 'utf-8');
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', { args: 'hello world' });
+      assert.equal(result.success, true, 'test_app should pass args to src/ entry point');
+      assert.match(result.output, /Args: hello,world/);
+
+      cleanup(dir);
+    });
+
+    it('fails gracefully when src/ directory exists but has no entry point', async () => {
+      const { dir, engine } = createTestWorkspace();
+      mkdirSync(join(dir, 'my-app', 'src'), { recursive: true });
+      // src/ directory exists but is empty — no entry point
+
+      engine._currentApp = 'my-app';
+      const result = await engine.execute('test_app', {});
+      assert.equal(result.success, false);
+      assert.match(result.error, /No entry point file found/);
+
+      cleanup(dir);
+    });
   });
 });

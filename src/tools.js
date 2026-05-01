@@ -2068,14 +2068,32 @@ Do NOT write everything into a single file. Split the functionality into separat
           return { success: false, error: `App directory "${appDir}" does not exist.` };
         }
 
-        // Look for common entry point files
+        // Look for common entry point files.
+        // First check the app root directory, then check src/ subdirectory.
         const entryPoints = ['app.js', 'index.js', 'server.js', 'main.js', 'app.mjs', 'index.mjs', 'index.html'];
         let entryPoint = null;
+        let entryPointInSrc = false; // Track if entry point is in src/ subdirectory
         for (const ep of entryPoints) {
           const epPath = join(appPath, ep);
           if (existsSync(epPath)) {
             entryPoint = ep;
+            entryPointInSrc = false;
             break;
+          }
+        }
+
+        // If not found at app root, check inside src/ subdirectory
+        if (!entryPoint) {
+          const srcPath = join(appPath, 'src');
+          if (existsSync(srcPath)) {
+            for (const ep of entryPoints) {
+              const epPath = join(srcPath, ep);
+              if (existsSync(epPath)) {
+                entryPoint = ep;
+                entryPointInSrc = true;
+                break;
+              }
+            }
           }
         }
 
@@ -2100,17 +2118,19 @@ Do NOT write everything into a single file. Split the functionality into separat
         }
 
         // Build the command: node <entrypoint> [args]
+        // If the entry point is in src/, prefix the path with src/
         // If no args were provided, also test with --help to catch apps that use
         // commander or similar CLI argument parsing. The initial test (no args)
         // tests the help menu / startup. The --help test tests that the app
         // doesn't crash when given a flag argument.
+        const entryPointPath = entryPointInSrc ? `src/${entryPoint}` : entryPoint;
         const cmdArgs = args ? ` ${args}` : '';
-        const command = `node ${entryPoint}${cmdArgs}`;
+        const command = `node ${entryPointPath}${cmdArgs}`;
         
         // If no args were provided, we'll also test with --help to catch
         // apps that use commander or similar CLI argument parsing.
         // The --help flag should always work for any well-formed CLI app.
-        const helpCommand = args ? null : `node ${entryPoint} --help`;
+        const helpCommand = args ? null : `node ${entryPointPath} --help`;
 
         // Run with a 5s timeout (same as execute_command for run commands).
         // For interactive apps (readline menus), we pipe "exit\n" to stdin

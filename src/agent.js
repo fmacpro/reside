@@ -773,8 +773,8 @@ export class Agent {
                 if (isMissingEntryPoint) {
                   guidance = `The app failed to run because no entry point file was found. You wrote controller/service modules but forgot to create the main entry point file (e.g., app.js, index.js).\n\n` +
                     `You MUST create the entry point file using write_file(). The entry point is the main file that imports and calls the controllers/services. ` +
-                    `For example: write_file({"path":"<app-dir>/app.js","content":"..."}) with the complete source code that imports from your controller/service modules ` +
-                    `and starts the application. Do NOT edit existing files — create the missing entry point file. ` +
+                    `You can place it at the app root (e.g., write_file({"path":"<app-dir>/app.js","content":"..."})) or inside a src/ subdirectory ` +
+                    `(e.g., write_file({"path":"<app-dir>/src/app.js","content":"..."})) — both patterns are supported. ` +
                     `After creating the file, call test_app() again to verify.`;
                 } else {
                   guidance = `The app failed to run because a required file is missing. Here is the error:\n\n${testResult.error}\n\n` +
@@ -961,7 +961,7 @@ export class Agent {
           if (isTopLevel && !this._hasWrittenEntryPoint) {
             this.messages.push({
               role: 'system',
-              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN structure your app with controllers and write source files using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code files first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };\n\nAPP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
+              content: 'Directory created successfully. For Node.js apps, you MUST first run "npm init -y" (using execute_command with cwd set to the app directory) to create package.json, THEN structure your app with controllers and write source files using write_file(). Do NOT write the source file before initializing the project — the app needs package.json to run. Do NOT search the web, do NOT try to run the app, and do NOT call finish() — initialize the project and write the source code files first.\n\nIMPORTANT: All new Node.js apps use ES modules (type: module) by default. The system automatically adds "type": "module" to package.json after npm init -y. Your source code MUST use import/export syntax, NOT require(). If you use require(), the app will crash with "require is not defined in ES module scope". For JSON file imports, use: import data from "./file.json" with { type: "json" };\n\nAPP STRUCTURE: For any app with multiple features or routes, create subdirectories for organization using create_directory() (e.g., create_directory("app-name/controllers"), create_directory("app-name/services")). You can place the entry point at the app root (e.g., app.js) or inside a src/ subdirectory (e.g., src/app.js) — both patterns are supported. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for details.',
             });
           }
         }
@@ -1296,12 +1296,13 @@ export class Agent {
                   `to find the "main" field, then read that entry point file to see the actual exported functions ` +
                   `(cpu, mem, graphics, etc.) and their return structures before writing code that calls them.\n\n` +
                   `After inspecting the API, structure your app with controllers and write the source code files using write_file(). ` +
-                  `Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), ` +
-                  `controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. ` +
+                  `Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point ` +
+                  `(app.js at the app root or src/app.js inside a src/ subdirectory — both patterns are supported), ` +
+                  `controllers, and services. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. ` +
                   `See the APP ARCHITECTURE section in the system prompt for the recommended structure.`;
               } else {
                 // npm init — standard guidance
-                guidance = 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js), controllers, and services. Keep app.js thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.';
+                guidance = 'Project initialized successfully. Now you MUST structure your app with controllers and write the source code files using write_file(). Create subdirectories first (controllers/, services/, utils/) using create_directory(), then write the entry point (app.js at the app root or src/app.js inside a src/ subdirectory — both patterns are supported), controllers, and services. Keep the entry point thin — put route handlers in controllers/ and business logic in services/. See the APP ARCHITECTURE section in the system prompt for the recommended structure.';
               }
               
               this.messages.push({
@@ -1958,8 +1959,8 @@ export class Agent {
                     if (isMissingEntryPoint) {
                       guidance = `The app "${appDir}" failed to run because no entry point file was found. You wrote controller/service modules but forgot to create the main entry point file (e.g., app.js, index.js).\n\n` +
                         `You MUST create the entry point file using write_file(). The entry point is the main file that imports and calls the controllers/services. ` +
-                        `For example: write_file({"path":"${appDir}/app.js","content":"..."}) with the complete source code that imports from your controller/service modules ` +
-                        `and starts the application. Do NOT edit existing files — create the missing entry point file. ` +
+                        `You can place it at the app root (e.g., write_file({"path":"${appDir}/app.js","content":"..."})) or inside a src/ subdirectory ` +
+                        `(e.g., write_file({"path":"${appDir}/src/app.js","content":"..."})) — both patterns are supported. ` +
                         `After creating the file, call test_app() again to verify the fix works.\n\n` +
                         `You have ${attemptsLeft} attempt${attemptsLeft === 1 ? '' : 's'} remaining before the session ends.`;
                     } else {
