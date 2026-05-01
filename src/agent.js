@@ -1449,10 +1449,36 @@ export class Agent {
                   content: `"${installPkg}" is a built-in Node.js module — it does NOT need to be installed via npm. It is already available in Node.js. Just use import statements directly: import { ${installPkg === 'fs' ? 'readFileSync, writeFileSync, existsSync, mkdirSync' : installPkg} } from "node:${installPkg}"; Do NOT try to install it. Just write the source code using the built-in module.`,
                 });
               } else {
-                this.messages.push({
-                  role: 'system',
-                  content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
-                });
+                // Detect: LLM tried to install a web API domain as an npm package
+                // (e.g., "npm install wttr.in", "npm install wttr-in", "npm install openweathermap-api").
+                // These are web APIs accessed via HTTP, not npm packages.
+                const webApiDomains = [
+                  'wttr.in', 'wttr-in', 'openweathermap', 'openweathermap-api',
+                  'weather-api', 'weatherstack', 'weatherapi', 'weather-api',
+                  'newsapi', 'news-api', 'github-api', 'gitlab-api',
+                  'reddit-api', 'twitter-api', 'x-api', 'discord-api',
+                  'slack-api', 'telegram-api', 'spotify-api', 'youtube-api',
+                  'google-api', 'aws-api', 'azure-api', 'stripe-api',
+                  'sendgrid', 'twilio-api', 'mailgun-api', 'algolia',
+                ];
+                const pkgName = installPkg.split(/\s+/)[0]; // Get first package name
+                const isWebApi = webApiDomains.some(domain =>
+                  pkgName.toLowerCase() === domain || pkgName.toLowerCase().includes(domain)
+                );
+                
+                if (isWebApi) {
+                  this.messages.push({
+                    role: 'system',
+                    content: `"${installPkg}" is a web API (accessed via HTTP), NOT an npm package. Do NOT try to install it via npm. Web APIs are accessed using HTTP requests. Use Node.js built-in fetch() (available since Node.js 18) to make HTTP requests to the API endpoint. For example, for wttr.in: const response = await fetch("https://wttr.in/London?format=j1"); const data = await response.json();\n\n` +
+                      `If you need an HTTP client with better error handling, install "axios" instead: execute_command({"command":"npm install axios","cwd":"<app-name>"}).\n\n` +
+                      `Do NOT try to install "${installPkg}" again — it does not exist on npm. Use fetch() or axios to access the API via HTTP.`,
+                  });
+                } else {
+                  this.messages.push({
+                    role: 'system',
+                    content: `The npm install command failed. Before trying to install a package again, you MUST first verify the package exists on the npm registry. Use search_npm_packages({"query":"<partial-name>"}) to search the npm registry directly. Do NOT use search_web() — the npm registry has its own search. Do NOT guess package names — many packages have different names than you expect. For example, instead of "curses" (which doesn't work), you might need "blessed", "chalk", or another package. Always search first, install second.`,
+                  });
+                }
               }
             }
 
